@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { resolveArtifact, saveArtifact, safePart } from '../store';
 import type { ArtifactRef } from '$lib/core/schemas';
-import { geminiVoiceOptions, qwenVoiceOptions } from '../voices';
+import { chatterboxVoiceOptions, geminiVoiceOptions, qwenVoiceOptions } from '../voices';
 import type { ImageProvider, ImageRequest, SpeechProvider, SpeechRequest, VoiceOption } from './contracts';
 
 function authHeaders(apiKey: string): Record<string, string> {
@@ -12,6 +12,13 @@ async function fetchChecked(url: string, init: RequestInit) {
   const response = await fetch(url, init);
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}: ${(await response.text()).slice(0, 500)}`);
   return response;
+}
+
+function qwenInstruction(request: SpeechRequest) {
+  const emotion = /^(neutral|calm)$/iu.test(request.emotion) ? '' : ` con emozione ${request.emotion}`;
+  const role = request.voice.characterId === 'narrator' ? 'narratore letterario sobrio' : 'personaggio credibile';
+  const pace = request.pace === 'slow' ? 'lento' : request.pace === 'fast' ? 'sostenuto' : 'naturale';
+  return `Leggi esclusivamente in italiano naturale come ${role}${emotion}, con ritmo ${pace}. Riproduci esattamente il testo senza aggiunte o commenti.`;
 }
 
 export class OpenAiCompatibleSpeechProvider implements SpeechProvider {
@@ -26,7 +33,7 @@ export class OpenAiCompatibleSpeechProvider implements SpeechProvider {
 
   async synthesize(request: SpeechRequest): Promise<ArtifactRef> {
     const language = request.voice.language === 'it' ? 'Italian' : request.voice.language;
-    const instructions = `Parla esclusivamente in italiano madrelingua. Mantieni stabile l'identità vocale: ${request.voice.description}. Emozione: ${request.emotion}. Intensità espressiva: ${request.intensity} su 1. Ritmo: ${request.pace}. Leggi il testo esattamente, senza aggiunte, omissioni o commenti.`;
+    const instructions = qwenInstruction(request);
     const response = await fetchChecked(`${this.baseUrl.replace(/\/$/, '')}/audio/speech`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...authHeaders(this.apiKey) },
@@ -48,6 +55,46 @@ export class OpenAiCompatibleSpeechProvider implements SpeechProvider {
         voiceId: request.voice.voiceId,
         language,
         instructions,
+        generationId: response.headers.get('x-generation-id') ?? undefined
+      }
+    );
+  }
+}
+
+export class ChatterboxSpeechProvider implements SpeechProvider {
+  readonly id = 'local-chatterbox';
+  readonly model = 'chatterbox-multilingual-v3';
+  readonly voiceOptions = chatterboxVoiceOptions;
+
+  constructor(private readonly baseUrl: string) {}
+
+  async synthesize(request: SpeechRequest): Promise<ArtifactRef> {
+    const expressive = !/^(neutral|calm)$/iu.test(request.emotion);
+    const exaggeration = expressive ? Math.min(0.7, 0.42 + request.intensity * 0.25) : 0.4;
+    const cfgWeight = request.pace === 'slow' ? 0.35 : request.pace === 'fast' ? 0.5 : 0.45;
+    const controls = `Italian · reference ${request.voice.voiceId} · emotion ${request.emotion} · exaggeration ${exaggeration.toFixed(2)} · cfg ${cfgWeight.toFixed(2)} · temperature 0.65`;
+    const response = await fetchChecked(`${this.baseUrl.replace(/\/$/, '')}/audio/speech`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: this.model,
+        input: request.text,
+        voice: request.voice.voiceId,
+        language: 'it',
+        response_format: 'wav',
+        seed: request.voice.seed,
+        exaggeration,
+        cfg_weight: cfgWeight,
+        temperature: 0.65
+      })
+    });
+    return saveArtifact(
+      request.bookId,
+      `audio/${safePart(request.artifactName)}.wav`,
+      new Uint8Array(await response.arrayBuffer()),
+      {
+        mimeType: 'audio/wav', provider: this.id, model: this.model,
+        voiceId: request.voice.voiceId, language: 'Italian', instructions: controls,
         generationId: response.headers.get('x-generation-id') ?? undefined
       }
     );

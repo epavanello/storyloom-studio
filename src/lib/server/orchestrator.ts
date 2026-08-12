@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { parseFile } from 'music-metadata';
 import { z } from 'zod';
 import { BookManifestSchema, ChapterPlanSchema, CharacterSchema, WorldElementSchema, type Character, type RenderedChapter, type WorldElement } from '$lib/core/schemas';
-import { locateChapterPlanText, validateChapterPlan, validateVisualBeatCoverage, visualBeatRange } from '$lib/core/plan';
+import { locateChapterPlanText, splitAttributedNarration, validateChapterPlan, validateVisualBeatCoverage, visualBeatRange } from '$lib/core/plan';
 import { parseBook } from './ingest';
 import { bookDir, getManifest, getRenderedChapter, saveManifest, saveRenderedChapter, safePart } from './store';
 import { providers } from './providers/router';
@@ -235,7 +235,7 @@ export async function prepareChapter(
           chapter.text,
           chapter.id,
           manifest.characters.map((character) => character.id),
-          locateChapterPlanText(chapter.text, candidate),
+          locateChapterPlanText(chapter.text, splitAttributedNarration(candidate)),
           manifest.worldElements.map((element) => element.id)
         ), visualRange.minimum, visualRange.maximum);
         return;
@@ -324,6 +324,15 @@ export async function regenerateChapterAudio(
   const previous = await getRenderedChapter(bookId, chapterId);
   if (!previous) throw new Error('Prepare the chapter once before regenerating only its audio');
   const manifest = await getManifest(bookId);
+  const chapter = manifest.chapters.find((candidate) => candidate.id === chapterId);
+  if (!chapter) throw new Error('Chapter not found');
+  const plan = validateChapterPlan(
+    chapter.text,
+    chapterId,
+    manifest.characters.map((character) => character.id),
+    locateChapterPlanText(chapter.text, splitAttributedNarration(previous.plan)),
+    manifest.worldElements.map((element) => element.id)
+  );
   const service = providers();
   const voiceRegistryCurrent = manifest.voices.some((voice) => voice.characterId === 'narrator')
     && manifest.characters.every((character) => manifest.voices.some((voice) => voice.characterId === character.id))
@@ -334,10 +343,10 @@ export async function regenerateChapterAudio(
   }
 
   const suffix = `-${safePart(generationId)}`;
-  const generated: { utterance: typeof previous.plan.utterances[number]; voice: ReturnType<typeof voiceFor>; audio: Awaited<ReturnType<typeof service.speech.synthesize>>; durationMs: number }[] = [];
-  await onProgress({ stepId: 'speech', status: 'running', completed: 0, total: previous.plan.utterances.length, detail: 'Regenerating the first passage in explicit Italian' });
+  const generated: { utterance: typeof plan.utterances[number]; voice: ReturnType<typeof voiceFor>; audio: Awaited<ReturnType<typeof service.speech.synthesize>>; durationMs: number }[] = [];
+  await onProgress({ stepId: 'speech', status: 'running', completed: 0, total: plan.utterances.length, detail: 'Regenerating the first passage in explicit Italian' });
   await withLocalRuntime('speech', async () => {
-    for (const [index, utterance] of previous.plan.utterances.entries()) {
+    for (const [index, utterance] of plan.utterances.entries()) {
       const voice = voiceFor(utterance.speakerCharacterId, manifest);
       const audio = await service.speech.synthesize({
         bookId,
@@ -355,7 +364,7 @@ export async function regenerateChapterAudio(
         if (metadata.format.duration) durationMs = metadata.format.duration * 1000;
       } catch { /* retain the explicit approximate duration */ }
       generated.push({ utterance, voice, audio, durationMs });
-      await onProgress({ stepId: 'speech', completed: index + 1, total: previous.plan.utterances.length, detail: `Regenerated ${index + 1} of ${previous.plan.utterances.length} passages` });
+      await onProgress({ stepId: 'speech', completed: index + 1, total: plan.utterances.length, detail: `Regenerated ${index + 1} of ${plan.utterances.length} passages` });
     }
   });
   await onProgress({ stepId: 'speech', status: 'completed', completed: generated.length, total: generated.length });
@@ -381,12 +390,13 @@ export async function regenerateChapterAudio(
   });
   await onProgress({ stepId: 'alignment', status: 'completed', completed: generated.length, total: generated.length });
 
-  const visuals = previous.visuals.map((visual) => ({
-    ...visual,
-    startMs: utterances.find((item) => item.utterance.id === visual.cue.utteranceId)?.startMs ?? 0
-  }));
+  const visuals = previous.visuals.map((visual) => {
+    const cue = plan.visuals.find((candidate) => candidate.id === visual.cue.id) ?? visual.cue;
+    return { ...visual, cue, startMs: utterances.find((item) => item.utterance.id === cue.utteranceId)?.startMs ?? 0 };
+  });
   const rendered: RenderedChapter = {
     ...previous,
+    plan,
     utterances,
     visuals,
     totalDurationMs: Math.max(1, timelineMs),

@@ -13,6 +13,15 @@ export const qwenVoiceOptions: readonly VoiceOption[] = [
   { id: 'Aiden', gender: 'male', description: 'young adult man' }
 ];
 
+export const chatterboxVoiceOptions: readonly VoiceOption[] = [
+  { id: 'narrator-warm-a', gender: 'female', description: 'fictional VoiceDesign · warm, authoritative Italian narrator' },
+  { id: 'narrator-clear-b', gender: 'female', description: 'fictional VoiceDesign · clear, understated Italian narrator' },
+  { id: 'narrator-deep-c', gender: 'female', description: 'fictional VoiceDesign · deep, cinematic Italian narrator' },
+  { id: 'male-sober-a', gender: 'male', description: 'fictional VoiceDesign · grounded mature Italian man' },
+  { id: 'male-grave-b', gender: 'male', description: 'fictional VoiceDesign · deep, reserved Italian investigator' },
+  { id: 'male-clear-c', gender: 'male', description: 'fictional VoiceDesign · clear adult Italian man' }
+];
+
 export const geminiVoiceOptions: readonly VoiceOption[] = [
   { id: 'Zephyr', gender: 'female', description: 'bright' },
   { id: 'Kore', gender: 'female', description: 'firm' },

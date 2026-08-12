@@ -65,8 +65,11 @@ Text work is batched before LM Studio is unloaded. Audio for all utterances is g
 The media runtime installations live outside the repository under `STORYLOOM_RUNTIME_HOME` (default `~/.local/share/storyloom-studio`). The configured target Mac already contains:
 
 - `qwen3-tts-api/.venv-mlx`
+- `chatterbox-v3/.venv`
 - `qwen3-aligner/.venv`
 - `mlx-openai-server/.venv`
+
+Set `LOCAL_TTS_ENGINE=qwen` for the original Qwen CustomVoice path or `LOCAL_TTS_ENGINE=chatterbox-v3` for the alternative local speech engine. The hybrid developer profile currently selects Chatterbox Multilingual V3. It runs on Apple MPS, pins Italian explicitly, and automatically assigns gender-compatible reusable reference identities from a local voice catalog. Generate the fictional local casting catalog with `~/.local/share/storyloom-studio/qwen3-tts-api/.venv-mlx/bin/python runtime/voice-casting/generate_candidates.py --output ~/.local/share/storyloom-studio/chatterbox-v3/voices/synthetic`; it uses the BF16 Qwen3-TTS VoiceDesign model to create original Italian references and records their prompt, seed, source model, and reference text. `runtime/voice-casting/render_chatterbox_auditions.py` can add a second role-specific Chatterbox rendition while that local server is running. The technical UI exposes both files for A/B auditioning. Chatterbox's `exaggeration`, `cfg_weight`, and temperature remain deliberately restrained for neutral audiobook narration and increase only for genuinely expressive directions.
 
 Storyloom adds `runtime/mlx-openai-server` to that process's `PYTHONPATH`. The contained compatibility overlay extends mlx-openai-server 1.8.1's square-only request enum with `1024x576` and forwards that size through its image-edit path. The underlying MFLUX model accepts independent width and height values; the installed virtual environment is not modified.
 
@@ -87,6 +90,10 @@ Registry analysis may also retain at most eight central recurring locations or o
 The book screen exposes explicit maintenance actions for qualitative iteration: regenerate one character reference, force a complete chapter regeneration, refresh outdated illustrated registry references, or remove a whole book. Forced chapter runs create new media files instead of overwriting the previous audio and images. Removing a book is refused while generation is active and moves its complete directory under the profile data root's `.trash` folder, so the operation is recoverable from disk.
 
 `Regenerate all audio` reuses the validated chapter plan and existing scene images, creates a new immutable WAV for every passage, runs alignment again, and reanchors the existing scenes to the new audio timeline. Local Qwen requests explicitly send `language: Italian` and use the server's `instruct` field for character identity, emotion, intensity and pace; `instructions` is not part of that local API and must not be used. The generated artifact records the effective language and instruction for diagnosis and cache provenance.
+
+Generation and destructive maintenance controls are available only when `STORYLOOM_TECHNICAL_UI=true`. The repository examples default this flag to `false`; the ignored developer profiles in this workspace enable it. In technical mode, the info marker beside each performed passage exposes a tooltip with its provider, model, voice, effective language and exact persisted TTS instruction. Artifacts created before this provenance field was introduced ask to be regenerated instead of pretending to know the historical prompt.
+
+Before validation, a deterministic dialogue pass separates quoted direct speech from surrounding attribution. For example, `«Come stai, Astri?», le chiese.` becomes an actor unit containing the quoted sentence and an immediately following narrator unit containing `, le chiese.`. The transformation preserves every source character and offset, remaps cue anchors and is also applied when using audio-only regeneration on an older chapter plan.
 
 The SvelteKit API routes are intentional. Experimental `.remote.ts` functions would provide typed client/server calls, but not durable background execution, cross-tab queueing, or process-independent progress. Keeping jobs as explicit HTTP resources also makes polling and future external clients straightforward while remote functions remain experimental.
 

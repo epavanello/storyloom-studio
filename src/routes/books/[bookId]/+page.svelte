@@ -120,6 +120,20 @@
     await request(`/api/books/${data.book.id}/characters/${encodeURIComponent(characterId)}/reference`);
   }
 
+  async function assignVoice(event: SubmitEvent, voiceId: string) {
+    event.preventDefault();
+    const characterId = String(new FormData(event.currentTarget as HTMLFormElement).get('characterId'));
+    requestError = '';
+    const response = await fetch(`/api/books/${data.book.id}/voices/${encodeURIComponent(characterId)}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ voiceId })
+    });
+    const payload = await response.json();
+    if (!response.ok) { requestError = payload.message ?? payload.error ?? 'Voice assignment failed'; return; }
+    await invalidateAll();
+  }
+
   async function deleteBook() {
     if (activeJobs.length) { requestError = 'Wait for the active generation job before deleting the book.'; return; }
     if (!confirm(`Remove “${data.book.title}” and all its generated artifacts from the library? It will be moved to Storyloom's recoverable data trash.`)) return;
@@ -196,6 +210,16 @@
     const seconds = Math.floor(milliseconds / 1000);
     return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
   }
+
+  function audioDebugTooltip(item: RenderedChapter['utterances'][number]) {
+    return [
+      `Provider: ${item.audio.provider}`,
+      `Model: ${item.audio.model}`,
+      `Voice: ${item.audio.voiceId ?? item.voice?.voiceId ?? 'unknown'}`,
+      `Language: ${item.audio.language ?? item.voice?.language ?? 'not recorded'}`,
+      `Prompt: ${item.audio.instructions ?? 'not recorded on this legacy artifact; regenerate audio to capture it'}`
+    ].join('\n');
+  }
 </script>
 
 <svelte:head><title>{data.book.title} · Storyloom</title></svelte:head>
@@ -217,7 +241,7 @@
       {/each}
     </nav>
     <div class="runtime-card"><span><i></i> Runtime · {data.runtime.mode}</span><strong>{data.runtime.mode === 'mock' ? 'Demo provider' : data.runtime.text}</strong><small>{data.runtime.mode === 'mock' ? 'Configure local or cloud models in .env' : `${data.runtime.speech} · ${data.runtime.image} · ${data.runtime.alignment}`}</small></div>
-    <button class="danger-button" onclick={deleteBook} disabled={activeJobs.length > 0}>Delete book</button>
+    {#if data.runtime.technicalUi}<button class="danger-button" onclick={deleteBook} disabled={activeJobs.length > 0}>Delete book</button>{/if}
   </aside>
 
   <main class="studio-main">
@@ -225,12 +249,14 @@
       <div><p class="eyebrow">Chapter {chapter ? chapter.order + 1 : ''}</p><h1>{chapter?.title}</h1></div>
       <div class="header-actions">
         <span class:ready={data.book.registryStatus === 'ready' && !visualReferencesOutdated} class="registry-badge">{data.book.registryStatus === 'ready' ? visualReferencesOutdated ? 'Visual references need refresh' : '✓ Continuity registries ready' : 'Continuity registries pending'}</span>
-        {#if data.book.registryStatus !== 'ready'}
-          <button class="secondary-button" onclick={prepareRegistry} disabled={registryJobActive}>Build registry</button>
-        {:else if visualReferencesOutdated}
-          <button class="secondary-button" onclick={prepareRegistry} disabled={registryJobActive}>Refresh illustrated references</button>
+        {#if data.runtime.technicalUi}
+          {#if data.book.registryStatus !== 'ready'}
+            <button class="secondary-button" onclick={prepareRegistry} disabled={registryJobActive}>Build registry</button>
+          {:else if visualReferencesOutdated}
+            <button class="secondary-button" onclick={prepareRegistry} disabled={registryJobActive}>Refresh illustrated references</button>
+          {/if}
+          {#if rendered}<button class="secondary-button" onclick={regenerateAudio} disabled={chapterJobActive}>{audioJobActive ? 'Regenerating audio…' : 'Regenerate all audio'}</button><button class="secondary-button" onclick={regenerateChapter} disabled={chapterJobActive}>Regenerate chapter</button>{/if}
         {/if}
-        {#if rendered}<button class="secondary-button" onclick={regenerateAudio} disabled={chapterJobActive}>{audioJobActive ? 'Regenerating audio…' : 'Regenerate all audio'}</button><button class="secondary-button" onclick={regenerateChapter} disabled={chapterJobActive}>Regenerate chapter</button>{/if}
       </div>
     </header>
 
@@ -275,7 +301,7 @@
               <button data-utterance-index={index} class:active={index === activeIndex} class="utterance" onclick={() => void selectUtterance(index)}>
                 <span class="speaker">{item.utterance.speakerCharacterId ? data.book.characters.find((character) => character.id === item.utterance.speakerCharacterId)?.canonicalName ?? item.utterance.speakerCharacterId : 'Narrator'}</span>
                 <span class="spoken-text">{item.utterance.text}</span>
-                <span class="direction">{item.utterance.direction.emotion} · {item.utterance.direction.pace}<i class:exact={item.alignment === 'exact'}>{item.alignment}</i></span>
+                <span class="direction">{item.utterance.direction.emotion} · {item.utterance.direction.pace}<i class:exact={item.alignment === 'exact'}>{item.alignment}</i>{#if data.runtime.technicalUi}<span class="audio-debug-tooltip" title={audioDebugTooltip(item)} aria-label="Audio generation prompt">ⓘ</span>{/if}</span>
               </button>
             {/each}
           </div>
@@ -300,7 +326,7 @@
         <p class="eyebrow">On-demand chapter</p>
         <h2>Ready for its first performance</h2>
         <p>The director will read the complete chapter, assign voices and emotion, choose visual beats, then generate synchronized assets.</p>
-        <button class="primary-button wide" onclick={prepareChapter} disabled={chapterJobActive}>{chapterJobActive ? 'Chapter queued or generating…' : 'Prepare this chapter'} <span>→</span></button>
+        {#if data.runtime.technicalUi}<button class="primary-button wide" onclick={prepareChapter} disabled={chapterJobActive}>{chapterJobActive ? 'Chapter queued or generating…' : 'Prepare this chapter'} <span>→</span></button>{/if}
         <div class="pipeline-preview"><span>Understand</span><b>→</b><span>Direct voices</span><b>→</b><span>Stage scenes</span><b>→</b><span>Synchronize</span></div>
       </section>
     {/if}
@@ -313,14 +339,40 @@
             {@const voice = data.book.voices.find((profile) => profile.characterId === character.id)}
             <article class="character-card">
               {#if character.referenceImages[0]}<img src={character.referenceImages[0].path} alt={`${character.canonicalName} reference`} />{:else}<div class="character-placeholder">{character.canonicalName.slice(0, 1)}</div>{/if}
-              <div><strong>{character.canonicalName}</strong><span>{character.narrativeRole}</span><p>{character.physicalDescription}</p>{#if voice}<small>Voice · {voice.voiceId} · {voice.gender}</small>{/if}<button class="debug-action" onclick={() => regenerateCharacter(character.id)} disabled={activeJobs.some((job) => job.kind === 'character-reference' && job.characterId === character.id)}>Regenerate reference</button></div>
+              <div><strong>{character.canonicalName}</strong><span>{character.narrativeRole}</span><p>{character.physicalDescription}</p>{#if voice}<small>Voice · {voice.voiceId} · {voice.gender}</small>{/if}{#if data.runtime.technicalUi}<button class="debug-action" onclick={() => regenerateCharacter(character.id)} disabled={activeJobs.some((job) => job.kind === 'character-reference' && job.characterId === character.id)}>Regenerate reference</button>{/if}</div>
             </article>
           {/each}
         </div>
       {:else}
-        <div class="registry-empty"><span>Characters will appear here after the registry pass.</span><button class="text-button" onclick={prepareRegistry} disabled={registryJobActive}>Build character registry</button></div>
+        <div class="registry-empty"><span>Characters will appear here after the registry pass.</span>{#if data.runtime.technicalUi}<button class="text-button" onclick={prepareRegistry} disabled={registryJobActive}>Build character registry</button>{/if}</div>
       {/if}
     </section>
+
+    {#if data.runtime.technicalUi && data.voiceCandidates.length}
+      <section class="character-section voice-lab-section">
+        <div class="section-title"><div><p class="eyebrow">Technical voice lab</p><h2>Synthetic voice references</h2></div><span>Qwen VoiceDesign → Chatterbox clone</span></div>
+        <p class="voice-lab-note">These are fictional, locally generated identities. The reference determines timbre; Chatterbox determines how each chapter passage is sustained and interpreted. Existing chapter audio must be regenerated after changing the catalog.</p>
+        <div class="voice-candidate-grid">
+          {#each data.voiceCandidates as candidate}
+            <article class="voice-candidate-card">
+              <div><strong>{candidate.label}</strong><span>{candidate.role} · {candidate.gender}</span></div>
+              <div class="voice-sample"><span>1 · Qwen VoiceDesign reference</span><audio controls preload="none" src={`/api/voice-catalog/${candidate.id}`}></audio></div>
+              {#if candidate.auditionFile}<div class="voice-sample"><span>2 · Chatterbox clone</span><audio controls preload="none" src={`/api/voice-catalog/${candidate.id}?kind=audition`}></audio></div>{/if}
+              <form class="voice-assignment" onsubmit={(event) => assignVoice(event, candidate.id)}>
+                <select name="characterId" aria-label={`Assign ${candidate.label} to`}>
+                  <option value="narrator">Narrator</option>
+                  {#each data.book.characters.filter((character) => ['unknown', 'neutral', candidate.gender].includes(character.voiceGender)) as character}
+                    <option value={character.id}>{character.canonicalName}</option>
+                  {/each}
+                </select>
+                <button class="debug-action" type="submit">Assign for next audio regeneration</button>
+              </form>
+              <details><summary>Voice design provenance</summary><small>Model · {candidate.sourceModel}</small><p><b>Language conditioning</b> · {candidate.language ?? 'legacy reference: invalid short code “it”, effectively auto'}</p><p><b>Prompt</b> · {candidate.prompt}</p><p><b>Reference text</b> · {candidate.referenceText}</p><p><b>Seed</b> · {candidate.seed}</p></details>
+            </article>
+          {/each}
+        </div>
+      </section>
+    {/if}
 
     {#if data.book.worldElements.length}
       <section class="character-section">

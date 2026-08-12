@@ -19,7 +19,7 @@ const stateKey = Symbol.for('storyloom.local-runtime-state');
 const globalState = globalThis as typeof globalThis & { [stateKey]?: RuntimeState };
 const state = globalState[stateKey] ??= { tail: Promise.resolve(), children: new Map(), exitHookInstalled: false };
 
-function runtimeHome() {
+export function runtimeHome() {
   return process.env.STORYLOOM_RUNTIME_HOME || join(homedir(), '.local/share/storyloom-studio');
 }
 
@@ -108,6 +108,16 @@ async function activate(phase: LocalRuntimePhase) {
 
   const home = runtimeHome();
   if (phase === 'speech') {
+    if (config.localTtsEngine === 'chatterbox-v3') {
+      const cwd = join(process.cwd(), 'runtime', 'chatterbox-server');
+      const installation = join(home, 'chatterbox-v3');
+      await startChild(phase, join(installation, '.venv/bin/python'), [
+        '-m', 'uvicorn', 'server:app', '--host', '127.0.0.1', '--port', '7861'
+      ], cwd, `${config.localTtsBaseUrl.replace(/\/v1\/?$/, '')}/health`, {
+        CHATTERBOX_VOICE_DIR: join(installation, 'voices')
+      });
+      return;
+    }
     const cwd = join(home, 'qwen3-tts-api');
     await startChild(phase, join(cwd, '.venv-mlx/bin/python'), [
       '-m', 'uvicorn', 'api.main:app', '--host', '127.0.0.1', '--port', '7861'

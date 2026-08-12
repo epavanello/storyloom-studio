@@ -5,12 +5,14 @@ const PolicySchema = z.enum(['local-required', 'local-preferred', 'cloud-preferr
 
 export const AppConfigSchema = z.object({
   mode: z.enum(['mock', 'local', 'cloud', 'hybrid']),
+  technicalUi: z.boolean(),
   dataDir: z.string(),
   localLlmBaseUrl: z.string(),
   localLlmModel: z.string(),
   localLlmModelKey: z.string(),
   openRouterApiKey: z.string(),
   openRouterLlmModel: z.string(),
+  localTtsEngine: z.enum(['qwen', 'chatterbox-v3']),
   localTtsBaseUrl: z.string(),
   localTtsModel: z.string(),
   localTtsRuntimeModel: z.string(),
@@ -32,12 +34,14 @@ export const AppConfigSchema = z.object({
 export function getConfig() {
   return AppConfigSchema.parse({
     mode: env.STORYLOOM_MODE ?? 'mock',
+    technicalUi: env.STORYLOOM_TECHNICAL_UI === 'true',
     dataDir: env.STORYLOOM_DATA_DIR ?? './data',
     localLlmBaseUrl: env.LOCAL_LLM_BASE_URL ?? 'http://127.0.0.1:1234/v1',
     localLlmModel: env.LOCAL_LLM_MODEL ?? 'local-model',
     localLlmModelKey: env.LOCAL_LLM_MODEL_KEY ?? env.LOCAL_LLM_MODEL ?? 'local-model',
     openRouterApiKey: env.OPENROUTER_API_KEY ?? '',
     openRouterLlmModel: env.OPENROUTER_LLM_MODEL ?? 'deepseek/deepseek-v4-flash-0731',
+    localTtsEngine: env.LOCAL_TTS_ENGINE ?? 'qwen',
     localTtsBaseUrl: env.LOCAL_TTS_BASE_URL ?? 'http://127.0.0.1:7861/v1',
     localTtsModel: env.LOCAL_TTS_MODEL ?? 'qwen3-tts',
     localTtsRuntimeModel: env.LOCAL_TTS_RUNTIME_MODEL ?? 'mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-8bit',

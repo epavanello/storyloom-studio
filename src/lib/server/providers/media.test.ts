@@ -10,7 +10,7 @@ vi.mock('../store', () => ({
   }))
 }));
 
-import { OpenAiCompatibleImageProvider, OpenAiCompatibleSpeechProvider, OpenRouterSpeechProvider } from './media';
+import { ChatterboxSpeechProvider, OpenAiCompatibleImageProvider, OpenAiCompatibleSpeechProvider, OpenRouterSpeechProvider } from './media';
 import type { ImageRequest } from './contracts';
 
 describe('OpenRouter speech adapter', () => {
@@ -46,9 +46,25 @@ describe('Local Qwen speech adapter', () => {
     });
     const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
     expect(body).toMatchObject({ language: 'Italian', voice: 'Serena', input: 'Buongiorno.' });
-    expect(body.instruct).toContain('italiano madrelingua');
+    expect(body.instruct).toBe('Leggi esclusivamente in italiano naturale come narratore letterario sobrio, con ritmo naturale. Riproduci esattamente il testo senza aggiunte o commenti.');
     expect(body).not.toHaveProperty('instructions');
     expect(body).not.toHaveProperty('seed');
+  });
+});
+
+describe('Local Chatterbox V3 adapter', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('uses an Italian reference identity and restrained controls for neutral narration', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(new Uint8Array([1, 2, 3]), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = new ChatterboxSpeechProvider('http://127.0.0.1:7861/v1');
+    await provider.synthesize({
+      bookId: 'book', artifactName: 'line', text: 'Uscita dall’ospedale.', emotion: 'neutral', intensity: 1, pace: 'slow',
+      voice: { characterId: 'narrator', voiceId: 'narrator-female', seed: 42, description: 'warm narrator', gender: 'female', language: 'it', provider: provider.id, model: provider.model }
+    });
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    expect(body).toMatchObject({ language: 'it', voice: 'narrator-female', exaggeration: 0.4, cfg_weight: 0.35, temperature: 0.65 });
   });
 });
 

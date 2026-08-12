@@ -1,7 +1,7 @@
 import { getConfig } from '../config';
 import { AiSdkStructuredProvider, OpenRouterStructuredProvider } from './text';
 import { MockImageProvider, MockSpeechProvider, MockStructuredProvider, ProportionalAligner } from './mock';
-import { OpenAiCompatibleImageProvider, OpenAiCompatibleSpeechProvider, OpenRouterImageProvider, OpenRouterSpeechProvider } from './media';
+import { ChatterboxSpeechProvider, OpenAiCompatibleImageProvider, OpenAiCompatibleSpeechProvider, OpenRouterImageProvider, OpenRouterSpeechProvider } from './media';
 import { QwenForcedAlignerProvider } from './alignment';
 import type { AlignmentProvider, ImageProvider, ImageRequest, SpeechProvider, SpeechRequest, StructuredRequest, StructuredTextProvider } from './contracts';
 import { remapVoice } from '../voices';
@@ -53,7 +53,9 @@ export function providers() {
     reasoningEffort: 'none'
   });
   const cloudText = new OpenRouterStructuredProvider(config.openRouterLlmModel, config.openRouterApiKey);
-  const localSpeech = new OpenAiCompatibleSpeechProvider('local-tts', config.localTtsModel, config.localTtsBaseUrl, '', 'wav');
+  const localSpeech = config.localTtsEngine === 'chatterbox-v3'
+    ? new ChatterboxSpeechProvider(config.localTtsBaseUrl)
+    : new OpenAiCompatibleSpeechProvider('local-tts', config.localTtsModel, config.localTtsBaseUrl, '', 'wav');
   const cloudSpeech = new OpenRouterSpeechProvider(config.openRouterTtsModel, config.openRouterApiKey, config.openRouterTtsVoices);
   const localImage = new OpenAiCompatibleImageProvider('local-image', config.localImageModel, config.localImageBaseUrl, '');
   const cloudImage = new OpenRouterImageProvider(config.openRouterImageModel, config.openRouterApiKey);
