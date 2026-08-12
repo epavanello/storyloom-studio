@@ -80,7 +80,8 @@ export async function prepareRegistry(bookId: string, onProgress: ProgressReport
           schema: CharacterPatchSchema,
           schemaName: 'character-patch',
           system: 'Extract story characters. Deduplicate against the supplied registry. Never invent physical traits not supported by the text.',
-          prompt: `CHAPTER_ID: ${chapter.id}\nCURRENT_REGISTRY:\n${JSON.stringify(current)}\nCHAPTER_TEXT:\n${chapter.text}`
+          prompt: `CHAPTER_ID: ${chapter.id}\nCURRENT_REGISTRY:\n${JSON.stringify(current)}\nCHAPTER_TEXT:\n${chapter.text}`,
+          onStatus: (detail) => onProgress({ stepId: 'registry-analysis', detail: `${chapter.title} · ${detail}` })
         });
         current = mergeCharacters(current, patch.characters.map((character) => ({ ...character, id: safePart(character.id || character.canonicalName) })));
         manifest.characters = current;
@@ -138,24 +139,45 @@ export async function prepareChapter(bookId: string, chapterId: string, onProgre
   if (!chapter) throw new Error('Chapter not found');
   const service = providers();
   await onProgress({ stepId: 'plan', status: 'running', completed: 0, total: 1, detail: 'Directing the complete chapter' });
-  const generatedPlan = await withLocalRuntime('text', () => service.text.generate({
-    schema: ChapterPlanSchema,
-    schemaName: 'chapter-plan',
-    system: `Create an audiobook performance plan from the complete chapter. Preserve every original word exactly across utterances and attribute dialogue only when certain. Choose sparse, meaningful visual beats. Use stable character IDs from the registry. Do not include sound effects unless narratively useful.`,
-    prompt: `CHAPTER_ID: ${chapter.id}\nCHAPTER_TITLE: ${chapter.title}\nCHAPTER_TEXT:\n${chapter.text}\n\nCHARACTER_REGISTRY:\n${JSON.stringify(manifest.characters)}`
-  }));
-  const plan = validateChapterPlan(
-    chapter.text,
-    chapter.id,
-    manifest.characters.map((character) => character.id),
-    locateChapterPlanText(chapter.text, generatedPlan)
-  );
-  await onProgress({ stepId: 'plan', status: 'completed', completed: 1, total: 1, detail: `${plan.utterances.length} passages and ${plan.visuals.length} visual beats planned` });
+  let plan: z.infer<typeof ChapterPlanSchema> | undefined;
+  let rejectedPlan: z.infer<typeof ChapterPlanSchema> | undefined;
+  let planError = '';
+  await withLocalRuntime('text', async () => {
+    for (let planAttempt = 1; planAttempt <= 3; planAttempt += 1) {
+      await onProgress({ stepId: 'plan', status: 'running', detail: `Validating complete source coverage · plan attempt ${planAttempt} of 3` });
+      const correction = rejectedPlan
+        ? `\n\nPREVIOUS_PLAN_REJECTED:\n${JSON.stringify(rejectedPlan)}\n\nVALIDATION_ERROR:\n${planError}\nReturn a complete corrected plan. Do not patch only one utterance.`
+        : '';
+      const candidate = await service.text.generate({
+        schema: ChapterPlanSchema,
+        schemaName: 'chapter-plan',
+        system: `Create an audiobook performance plan from the complete chapter. Preserve every original word exactly once across ordered utterances: no omissions, additions, summaries, overlaps, or reordered passages. Attribute dialogue only when certain. Choose sparse, meaningful visual beats. Use stable character IDs from the registry. Do not include sound effects unless narratively useful.`,
+        prompt: `CHAPTER_ID: ${chapter.id}\nCHAPTER_TITLE: ${chapter.title}\nCHAPTER_TEXT:\n${chapter.text}\n\nCHARACTER_REGISTRY:\n${JSON.stringify(manifest.characters)}${correction}`,
+        onStatus: (detail) => onProgress({ stepId: 'plan', status: 'running', detail: `${detail} · plan ${planAttempt} of 3` })
+      });
+      try {
+        plan = validateChapterPlan(
+          chapter.text,
+          chapter.id,
+          manifest.characters.map((character) => character.id),
+          locateChapterPlanText(chapter.text, candidate)
+        );
+        return;
+      } catch (error) {
+        rejectedPlan = candidate;
+        planError = error instanceof Error ? error.message : String(error);
+        if (planAttempt === 3) throw error;
+      }
+    }
+  });
+  const finalPlan = plan;
+  if (!finalPlan) throw new Error('Chapter planner did not produce a validated plan');
+  await onProgress({ stepId: 'plan', status: 'completed', completed: 1, total: 1, detail: `${finalPlan.utterances.length} passages and ${finalPlan.visuals.length} visual beats planned` });
 
-  const audioUtterances: { utterance: typeof plan.utterances[number]; audio: Awaited<ReturnType<typeof service.speech.synthesize>>; durationMs: number }[] = [];
-  await onProgress({ stepId: 'speech', status: 'running', completed: 0, total: plan.utterances.length, detail: 'Generating the first passage' });
+  const audioUtterances: { utterance: typeof finalPlan.utterances[number]; audio: Awaited<ReturnType<typeof service.speech.synthesize>>; durationMs: number }[] = [];
+  await onProgress({ stepId: 'speech', status: 'running', completed: 0, total: finalPlan.utterances.length, detail: 'Generating the first passage' });
   await withLocalRuntime('speech', async () => {
-    for (const [index, utterance] of plan.utterances.entries()) {
+    for (const [index, utterance] of finalPlan.utterances.entries()) {
       const voice = voiceFor(utterance.speakerCharacterId, manifest);
       const audio = await service.speech.synthesize({
         bookId, artifactName: `${chapter.id}-${utterance.id}`, text: utterance.text, voice,
@@ -168,10 +190,10 @@ export async function prepareChapter(bookId: string, chapterId: string, onProgre
         if (metadata.format.duration) durationMs = metadata.format.duration * 1000;
       } catch { /* use estimate */ }
       audioUtterances.push({ utterance, audio, durationMs });
-      await onProgress({ stepId: 'speech', completed: index + 1, total: plan.utterances.length, detail: `Generated ${index + 1} of ${plan.utterances.length} passages` });
+      await onProgress({ stepId: 'speech', completed: index + 1, total: finalPlan.utterances.length, detail: `Generated ${index + 1} of ${finalPlan.utterances.length} passages` });
     }
   });
-  await onProgress({ stepId: 'speech', status: 'completed', completed: plan.utterances.length, total: plan.utterances.length });
+  await onProgress({ stepId: 'speech', status: 'completed', completed: finalPlan.utterances.length, total: finalPlan.utterances.length });
 
   const renderedUtterances: RenderedChapter['utterances'] = [];
   let timelineMs = 0;
@@ -186,7 +208,7 @@ export async function prepareChapter(bookId: string, chapterId: string, onProgre
   });
   await onProgress({ stepId: 'alignment', status: 'completed', completed: audioUtterances.length, total: audioUtterances.length });
 
-  const visualJobs = plan.visuals.map((cue) => ({
+  const visualJobs = finalPlan.visuals.map((cue) => ({
     cue,
     characters: cue.characterIds.map((id) => manifest.characters.find((character) => character.id === id)).filter(Boolean) as Character[]
   }));
@@ -210,8 +232,8 @@ export async function prepareChapter(bookId: string, chapterId: string, onProgre
   if (plainVisuals.length) await withLocalRuntime('image-generate', () => generateVisuals(plainVisuals));
   if (referenceVisuals.length) await withLocalRuntime('image-edit', () => generateVisuals(referenceVisuals));
   await onProgress({ stepId: 'visuals', status: 'completed', completed: visualJobs.length, total: visualJobs.length });
-  renderedVisuals.sort((a, b) => plan.visuals.indexOf(a.cue) - plan.visuals.indexOf(b.cue));
-  const rendered = { schemaVersion: 1 as const, chapterId, plan, utterances: renderedUtterances, visuals: renderedVisuals, totalDurationMs: Math.max(1, timelineMs), createdAt: new Date().toISOString() };
+  renderedVisuals.sort((a, b) => finalPlan.visuals.indexOf(a.cue) - finalPlan.visuals.indexOf(b.cue));
+  const rendered = { schemaVersion: 1 as const, chapterId, plan: finalPlan, utterances: renderedUtterances, visuals: renderedVisuals, totalDurationMs: Math.max(1, timelineMs), createdAt: new Date().toISOString() };
   await saveRenderedChapter(bookId, rendered);
   return rendered;
 }

@@ -6,6 +6,7 @@ export type StructuredRequest<T> = {
   prompt: string;
   schema: z.ZodType<T>;
   schemaName: string;
+  onStatus?: (detail: string) => Promise<void>;
 };
 
 export interface StructuredTextProvider {
@@ -50,4 +51,3 @@ export interface AlignmentProvider {
   id: string;
   align(audioPath: string, text: string, durationMs: number): Promise<{ words: { text: string; startMs: number; endMs: number }[]; quality: 'exact' | 'approximate' }>;
 }
-

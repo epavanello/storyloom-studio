@@ -11,6 +11,7 @@
   let activeTimeMs = $state(0);
   let playing = $state(false);
   let audio = $state<HTMLAudioElement>();
+  let loadedChapterId = $state<string>();
 
   const chapter = $derived(data.book.chapters.find((item) => item.id === data.chapterId));
   const activeUtterance = $derived(rendered?.utterances[activeIndex]);
@@ -24,7 +25,17 @@
   const failedJob = $derived(latestRelevantJob?.status === 'failed' ? latestRelevantJob : undefined);
 
   $effect(() => {
-    if (!rendered && data.rendered) rendered = data.rendered;
+    const chapterId = data.chapterId;
+    const nextRendered = data.rendered;
+    const renderChanged = nextRendered?.createdAt !== rendered?.createdAt;
+    if (loadedChapterId !== chapterId || renderChanged) {
+      audio?.pause();
+      loadedChapterId = chapterId;
+      rendered = nextRendered;
+      activeIndex = 0;
+      activeTimeMs = 0;
+      playing = false;
+    }
   });
 
   $effect(() => {

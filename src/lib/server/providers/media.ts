@@ -131,25 +131,37 @@ export class OpenRouterImageProvider implements ImageProvider {
         return null;
       }
     })).then((items) => items.filter((item): item is NonNullable<typeof item> => item !== null));
-    const response = await fetchChecked('https://openrouter.ai/api/v1/images', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', ...authHeaders(this.apiKey) },
-      body: JSON.stringify({
-        model: this.model,
-        prompt: request.prompt,
-        aspect_ratio: request.kind === 'scene' ? '16:9' : '1:1',
-        resolution: '1K',
-        ...(inputReferences.length ? { input_references: inputReferences } : {})
-      })
-    });
-    const payload = await response.json() as { data?: { b64_json?: string; url?: string; media_type?: string }[] };
-    const result = payload.data?.[0];
-    if (!result) throw new Error('OpenRouter returned no image');
-    const bytes = result.b64_json
-      ? Uint8Array.from(Buffer.from(result.b64_json, 'base64'))
-      : new Uint8Array(await (await fetchChecked(result.url!, {})).arrayBuffer());
-    const mimeType = result.media_type ?? 'image/png';
-    const extension = mimeType === 'image/svg+xml' ? 'svg' : mimeType === 'image/jpeg' ? 'jpg' : mimeType === 'image/webp' ? 'webp' : 'png';
-    return saveArtifact(request.bookId, `${request.kind === 'scene' ? 'scenes' : 'characters'}/${safePart(request.artifactName)}.${extension}`, bytes, { mimeType, provider: this.id, model: this.model });
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        const response = await fetchChecked('https://openrouter.ai/api/v1/images', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', ...authHeaders(this.apiKey) },
+          signal: AbortSignal.timeout(120_000),
+          body: JSON.stringify({
+            model: this.model,
+            prompt: request.prompt,
+            aspect_ratio: request.kind === 'scene' ? '16:9' : '1:1',
+            resolution: '1K',
+            ...(inputReferences.length ? { input_references: inputReferences } : {})
+          })
+        });
+        const payload = await response.json() as { data?: { b64_json?: string; url?: string; media_type?: string }[] };
+        const result = payload.data?.[0];
+        if (!result) throw new Error('OpenRouter returned no image data');
+        const bytes = result.b64_json
+          ? Uint8Array.from(Buffer.from(result.b64_json, 'base64'))
+          : new Uint8Array(await (await fetchChecked(result.url!, { signal: AbortSignal.timeout(30_000) })).arrayBuffer());
+        const mimeType = result.media_type ?? 'image/png';
+        const extension = mimeType === 'image/svg+xml' ? 'svg' : mimeType === 'image/jpeg' ? 'jpg' : mimeType === 'image/webp' ? 'webp' : 'png';
+        return saveArtifact(request.bookId, `${request.kind === 'scene' ? 'scenes' : 'characters'}/${safePart(request.artifactName)}.${extension}`, bytes, { mimeType, provider: this.id, model: this.model });
+      } catch (error) {
+        lastError = error;
+        const message = error instanceof Error ? error.message : String(error);
+        const retryable = /IMAGE_OTHER|no image data|^(408|429|5\d\d)\b|timeout|aborted/iu.test(message);
+        if (!retryable || attempt === 3) throw error;
+      }
+    }
+    throw new Error(`OpenRouter image generation failed after 3 attempts: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
   }
 }

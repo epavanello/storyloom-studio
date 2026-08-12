@@ -52,39 +52,52 @@ export class OpenRouterStructuredProvider implements StructuredTextProvider {
       { role: 'system', content: `${request.system}\nReturn only the requested structured result. Do not include reasoning or markdown. Every required property must be present; use an empty array when no items are found.` },
       { role: 'user', content: request.prompt }
     ];
-    let validationError: unknown;
+    let lastError: unknown;
     for (let attempt = 1; attempt <= 3; attempt += 1) {
-      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${this.apiKey}`, 'content-type': 'application/json' },
-        body: JSON.stringify({
-          model: this.model,
-          messages,
-          response_format: {
-            type: 'json_schema',
-            json_schema: { name: request.schemaName, strict: true, schema: z.toJSONSchema(request.schema) }
-          },
-          reasoning: { enabled: false },
-          temperature: attempt === 1 ? 0.2 : 0,
-          max_tokens: 16_384
-        })
-      });
-      if (!response.ok) throw new Error(`${response.status} ${response.statusText}: ${(await response.text()).slice(0, 500)}`);
-      const payload = await response.json() as { choices?: { message?: { content?: string | null } }[]; error?: { message?: string } };
-      const content = payload.choices?.[0]?.message?.content;
-      if (!content) throw new Error(payload.error?.message ?? 'OpenRouter returned no structured content');
+      await request.onStatus?.(`Waiting for ${this.model} · attempt ${attempt} of 3`);
       try {
-        return request.schema.parse(JSON.parse(content));
+        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${this.apiKey}`, 'content-type': 'application/json' },
+          signal: AbortSignal.timeout(90_000),
+          body: JSON.stringify({
+            model: this.model,
+            messages,
+            response_format: {
+              type: 'json_schema',
+              json_schema: { name: request.schemaName, strict: true, schema: z.toJSONSchema(request.schema) }
+            },
+            reasoning: { enabled: false },
+            temperature: attempt === 1 ? 0.2 : 0,
+            max_tokens: 16_384
+          })
+        });
+        const errorText = response.ok ? '' : (await response.text()).slice(0, 500);
+        if (!response.ok) {
+          const providerError = new Error(`${response.status} ${response.statusText}: ${errorText}`);
+          if (response.status < 500 && response.status !== 408 && response.status !== 429) throw providerError;
+          lastError = providerError;
+          continue;
+        }
+        const payload = await response.json() as { choices?: { message?: { content?: string | null } }[]; error?: { message?: string } };
+        const content = payload.choices?.[0]?.message?.content;
+        if (!content) throw new Error(payload.error?.message ?? 'OpenRouter returned no structured content');
+        try {
+          return request.schema.parse(JSON.parse(content));
+        } catch (error) {
+          lastError = error;
+          if (attempt === 3) break;
+          const issues = error instanceof z.ZodError ? error.issues : [{ message: error instanceof Error ? error.message : 'Invalid JSON' }];
+          messages.push(
+            { role: 'assistant', content },
+            { role: 'user', content: `The result violates the required schema. Correct it and return the complete JSON object. Validation issues:\n${JSON.stringify(issues)}` }
+          );
+        }
       } catch (error) {
-        validationError = error;
-        if (attempt === 3) break;
-        const issues = error instanceof z.ZodError ? error.issues : [{ message: error instanceof Error ? error.message : 'Invalid JSON' }];
-        messages.push(
-          { role: 'assistant', content },
-          { role: 'user', content: `The result violates the required schema. Correct it and return the complete JSON object. Validation issues:\n${JSON.stringify(issues)}` }
-        );
+        lastError = error;
+        if (attempt === 3 || (error instanceof Error && /^4\d\d /.test(error.message) && !/^(408|429) /.test(error.message))) throw error;
       }
     }
-    throw new Error(`OpenRouter returned invalid ${request.schemaName} after 3 schema-correction attempts: ${validationError instanceof Error ? validationError.message : String(validationError)}`);
+    throw new Error(`OpenRouter could not produce ${request.schemaName} after 3 attempts: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
   }
 }
