@@ -1,32 +1,40 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
-import { generateText } from 'ai';
+import { generateText, Output } from 'ai';
 import type { StructuredRequest, StructuredTextProvider } from './contracts';
-
-function extractJson(value: string) {
-  const fenced = value.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1];
-  const candidate = fenced ?? value.slice(value.indexOf('{'), value.lastIndexOf('}') + 1);
-  return JSON.parse(candidate);
-}
 
 export class AiSdkStructuredProvider implements StructuredTextProvider {
   readonly id: string;
   readonly model: string;
   private readonly provider;
+  private readonly reasoningEffort?: string;
 
-  constructor(options: { id: string; baseURL: string; apiKey: string; model: string }) {
+  constructor(options: { id: string; baseURL: string; apiKey: string; model: string; reasoningEffort?: string }) {
     this.id = options.id;
     this.model = options.model;
-    this.provider = createOpenAICompatible({ name: options.id, baseURL: options.baseURL, apiKey: options.apiKey || 'local' });
+    this.reasoningEffort = options.reasoningEffort;
+    this.provider = createOpenAICompatible({
+      name: options.id,
+      baseURL: options.baseURL,
+      apiKey: options.apiKey || 'local',
+      supportsStructuredOutputs: true
+    });
   }
 
   async generate<T>(request: StructuredRequest<T>): Promise<T> {
-    const response = await generateText({
+    const { output } = await generateText({
       model: this.provider(this.model),
-      system: `${request.system}\nReturn only valid JSON matching the requested structure.`,
+      output: Output.object({
+        name: request.schemaName,
+        schema: request.schema
+      }),
+      system: `${request.system}\nReturn only the requested structured result. Do not include reasoning or markdown.`,
       prompt: request.prompt,
-      temperature: 0.2
+      temperature: 0.2,
+      maxOutputTokens: 32_768,
+      providerOptions: this.reasoningEffort
+        ? { [this.id]: { reasoningEffort: this.reasoningEffort } }
+        : undefined
     });
-    return request.schema.parse(extractJson(response.text));
+    return request.schema.parse(output);
   }
 }
-

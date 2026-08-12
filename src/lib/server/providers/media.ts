@@ -14,7 +14,13 @@ async function fetchChecked(url: string, init: RequestInit) {
 }
 
 export class OpenAiCompatibleSpeechProvider implements SpeechProvider {
-  constructor(readonly id: string, readonly model: string, private readonly baseUrl: string, private readonly apiKey: string) {}
+  constructor(
+    readonly id: string,
+    readonly model: string,
+    private readonly baseUrl: string,
+    private readonly apiKey: string,
+    private readonly responseFormat: 'wav' | 'mp3' = 'mp3'
+  ) {}
 
   async synthesize(request: SpeechRequest): Promise<ArtifactRef> {
     const response = await fetchChecked(`${this.baseUrl.replace(/\/$/, '')}/audio/speech`, {
@@ -24,12 +30,17 @@ export class OpenAiCompatibleSpeechProvider implements SpeechProvider {
         model: this.model,
         input: request.text,
         voice: request.voice.voiceId,
-        response_format: 'mp3',
+        response_format: this.responseFormat,
         seed: request.voice.seed,
         instructions: `Speak in ${request.emotion} emotion, intensity ${request.intensity}, at a ${request.pace} pace.`
       })
     });
-    return saveArtifact(request.bookId, `audio/${safePart(request.artifactName)}.mp3`, new Uint8Array(await response.arrayBuffer()), { mimeType: 'audio/mpeg', provider: this.id, model: this.model });
+    return saveArtifact(
+      request.bookId,
+      `audio/${safePart(request.artifactName)}.${this.responseFormat}`,
+      new Uint8Array(await response.arrayBuffer()),
+      { mimeType: this.responseFormat === 'wav' ? 'audio/wav' : 'audio/mpeg', provider: this.id, model: this.model }
+    );
   }
 }
 
@@ -51,7 +62,7 @@ export class OpenAiCompatibleImageProvider implements ImageProvider {
     const response = await fetchChecked(`${this.baseUrl.replace(/\/$/, '')}/images/generations`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...authHeaders(this.apiKey) },
-      body: JSON.stringify({ model: this.model, prompt: request.prompt, size: '1536x1024', seed: request.seed, reference_images: references })
+      body: JSON.stringify({ model: this.model, prompt: request.prompt, size: '1024x640', seed: request.seed, reference_images: references })
     });
     const payload = await response.json() as { data?: { b64_json?: string; url?: string }[] };
     const result = payload.data?.[0];

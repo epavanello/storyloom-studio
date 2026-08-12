@@ -15,6 +15,8 @@ function seed(value: string) {
   return Math.abs(result);
 }
 
+const qwenPresetVoices = ['Vivian', 'Serena', 'Uncle_Fu', 'Dylan', 'Eric', 'Ryan', 'Aiden', 'Ono_Anna', 'Sohee'] as const;
+
 function mergeCharacters(existing: Character[], incoming: Character[]) {
   const merged = [...existing];
   for (const candidate of incoming) {
@@ -31,9 +33,12 @@ function mergeCharacters(existing: Character[], incoming: Character[]) {
 }
 
 function voiceFor(characterId: string | null, manifest: BookManifest): VoiceProfile {
-  if (!characterId) return { characterId: 'narrator', voiceId: 'narrator', seed: seed(`${manifest.id}:narrator`), description: 'Warm, expressive literary narrator' };
+  if (!characterId) return { characterId: 'narrator', voiceId: 'Serena', seed: seed(`${manifest.id}:narrator`), description: 'Warm, expressive literary narrator' };
   return manifest.voices.find((voice) => voice.characterId === characterId) ?? {
-    characterId, voiceId: `voice-${characterId}`, seed: seed(`${manifest.id}:${characterId}`), description: `Stable voice for ${characterId}`
+    characterId,
+    voiceId: qwenPresetVoices[seed(`${manifest.id}:${characterId}`) % qwenPresetVoices.length],
+    seed: seed(`${manifest.id}:${characterId}`),
+    description: `Stable voice for ${characterId}`
   };
 }
 

@@ -2,6 +2,7 @@ import { getConfig } from '../config';
 import { AiSdkStructuredProvider } from './text';
 import { MockImageProvider, MockSpeechProvider, MockStructuredProvider, ProportionalAligner } from './mock';
 import { OpenAiCompatibleImageProvider, OpenAiCompatibleSpeechProvider } from './media';
+import { QwenForcedAlignerProvider } from './alignment';
 import type { ImageProvider, ImageRequest, SpeechProvider, SpeechRequest, StructuredRequest, StructuredTextProvider } from './contracts';
 
 class FallbackTextProvider implements StructuredTextProvider {
@@ -28,9 +29,15 @@ export function providers() {
     text: new MockStructuredProvider(), image: new MockImageProvider(), speech: new MockSpeechProvider(), aligner: new ProportionalAligner()
   };
 
-  const localText = new AiSdkStructuredProvider({ id: 'lm-studio', baseURL: config.localLlmBaseUrl, apiKey: 'local', model: config.localLlmModel });
+  const localText = new AiSdkStructuredProvider({
+    id: 'lm-studio',
+    baseURL: config.localLlmBaseUrl,
+    apiKey: 'local',
+    model: config.localLlmModel,
+    reasoningEffort: 'none'
+  });
   const cloudText = new AiSdkStructuredProvider({ id: 'openrouter', baseURL: 'https://openrouter.ai/api/v1', apiKey: config.openRouterApiKey, model: config.openRouterLlmModel });
-  const localSpeech = new OpenAiCompatibleSpeechProvider('local-tts', config.localTtsModel, config.localTtsBaseUrl, '');
+  const localSpeech = new OpenAiCompatibleSpeechProvider('local-tts', config.localTtsModel, config.localTtsBaseUrl, '', 'wav');
   const cloudSpeech = new OpenAiCompatibleSpeechProvider('openrouter', config.openRouterTtsModel, 'https://openrouter.ai/api/v1', config.openRouterApiKey);
   const localImage = new OpenAiCompatibleImageProvider('local-image', config.localImageModel, config.localImageBaseUrl, '');
   const cloudImage = new OpenAiCompatibleImageProvider('openrouter', config.openRouterImageModel, 'https://openrouter.ai/api/v1', config.openRouterApiKey);
@@ -45,6 +52,6 @@ export function providers() {
     text: choose<StructuredTextProvider>(config.policies.text, localText, cloudText, (a, b) => new FallbackTextProvider(a, b)),
     speech: choose<SpeechProvider>(config.policies.tts, localSpeech, cloudSpeech, (a, b) => new FallbackSpeechProvider(a, b)),
     image: choose<ImageProvider>(config.policies.image, localImage, cloudImage, (a, b) => new FallbackImageProvider(a, b)),
-    aligner: new ProportionalAligner()
+    aligner: config.localAlignerBaseUrl ? new QwenForcedAlignerProvider(config.localAlignerBaseUrl) : new ProportionalAligner()
   };
 }
