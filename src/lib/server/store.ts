@@ -34,6 +34,15 @@ export async function getManifest(bookId: string) {
   return readJson(join(bookDir(bookId), 'book.json'), BookManifestSchema);
 }
 
+export async function trashBook(bookId: string) {
+  const manifest = await getManifest(bookId);
+  const trashRoot = join(root(), '.trash');
+  await mkdir(trashRoot, { recursive: true });
+  const destination = join(trashRoot, `${safePart(manifest.id)}-${Date.now()}`);
+  await rename(bookDir(manifest.id), destination);
+  return destination;
+}
+
 export async function listBooks() {
   const booksRoot = join(root(), 'books');
   await mkdir(booksRoot, { recursive: true });
@@ -57,8 +66,9 @@ export async function saveRenderedChapter(bookId: string, rendered: RenderedChap
 export async function getRenderedChapter(bookId: string, chapterId: string) {
   try {
     return await readJson(join(bookDir(bookId), 'rendered', `${safePart(chapterId)}.json`), RenderedChapterSchema);
-  } catch {
-    return null;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw new Error(`Stored render ${chapterId} is incompatible or damaged`, { cause: error });
   }
 }
 

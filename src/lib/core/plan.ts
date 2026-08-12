@@ -1,5 +1,27 @@
 import { ChapterPlanSchema, type ChapterPlan } from './schemas';
 
+export function visualBeatRange(sourceText: string) {
+  const words = sourceText.trim() ? sourceText.trim().split(/\s+/u).length : 0;
+  const minimum = words < 120 ? 1 : words < 350 ? 2 : Math.min(8, Math.max(3, Math.ceil(words / 250)));
+  return { minimum, maximum: Math.min(10, minimum + 2) };
+}
+
+export function validateVisualBeatCoverage(plan: ChapterPlan, minimum: number, maximum: number) {
+  if (plan.visuals.length < minimum || plan.visuals.length > maximum) {
+    throw new Error(`Visual direction requires ${minimum}-${maximum} beats; received ${plan.visuals.length}`);
+  }
+  if (minimum >= 3) {
+    const positions = plan.visuals
+      .map((visual) => plan.utterances.findIndex((utterance) => utterance.id === visual.utteranceId))
+      .sort((a, b) => a - b);
+    const lastIndex = Math.max(1, plan.utterances.length - 1);
+    if (positions[0] > lastIndex / 3 || positions.at(-1)! < lastIndex * 2 / 3) {
+      throw new Error('Visual beats must cover both the opening and final third of the chapter');
+    }
+  }
+  return plan;
+}
+
 export function locateChapterPlanText(sourceText: string, value: unknown): ChapterPlan {
   const plan = ChapterPlanSchema.parse(value);
   let cursor = 0;
@@ -29,11 +51,13 @@ export function validateChapterPlan(
   sourceText: string,
   chapterId: string,
   knownCharacterIds: Iterable<string>,
-  value: unknown
+  value: unknown,
+  knownWorldElementIds: Iterable<string> = []
 ): ChapterPlan {
   const plan = ChapterPlanSchema.parse(value);
   const errors: string[] = [];
   const characters = new Set(knownCharacterIds);
+  const worldElements = new Set(knownWorldElementIds);
 
   if (plan.chapterId !== chapterId) errors.push(`chapterId must be ${chapterId}`);
 
@@ -73,6 +97,9 @@ export function validateChapterPlan(
     if (!utteranceIds.has(visual.utteranceId)) errors.push(`${visual.id} references unknown utterance ${visual.utteranceId}`);
     for (const characterId of visual.characterIds) {
       if (!characters.has(characterId)) errors.push(`${visual.id} references unknown character ${characterId}`);
+    }
+    for (const worldElementId of visual.worldElementIds) {
+      if (!worldElements.has(worldElementId)) errors.push(`${visual.id} references unknown world element ${worldElementId}`);
     }
   }
 

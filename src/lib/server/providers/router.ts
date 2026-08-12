@@ -4,6 +4,7 @@ import { MockImageProvider, MockSpeechProvider, MockStructuredProvider, Proporti
 import { OpenAiCompatibleImageProvider, OpenAiCompatibleSpeechProvider, OpenRouterImageProvider, OpenRouterSpeechProvider } from './media';
 import { QwenForcedAlignerProvider } from './alignment';
 import type { AlignmentProvider, ImageProvider, ImageRequest, SpeechProvider, SpeechRequest, StructuredRequest, StructuredTextProvider } from './contracts';
+import { remapVoice } from '../voices';
 
 class FallbackTextProvider implements StructuredTextProvider {
   id: string; model: string;
@@ -13,8 +14,17 @@ class FallbackTextProvider implements StructuredTextProvider {
 
 class FallbackSpeechProvider implements SpeechProvider {
   id: string; model: string;
-  constructor(private primary: SpeechProvider, private fallback: SpeechProvider) { this.id = `${primary.id}->${fallback.id}`; this.model = primary.model; }
-  async synthesize(request: SpeechRequest) { try { return await this.primary.synthesize(request); } catch { return this.fallback.synthesize(request); } }
+  readonly voiceOptions: SpeechProvider['voiceOptions'];
+  constructor(private primary: SpeechProvider, private fallback: SpeechProvider) {
+    this.id = `${primary.id}->${fallback.id}`; this.model = primary.model; this.voiceOptions = primary.voiceOptions;
+  }
+  async synthesize(request: SpeechRequest) {
+    try { return await this.primary.synthesize(request); }
+    catch {
+      const voice = remapVoice(request.voice, this.fallback.voiceOptions, this.fallback.id, this.fallback.model);
+      return this.fallback.synthesize({ ...request, voice });
+    }
+  }
 }
 
 class FallbackImageProvider implements ImageProvider {

@@ -1,11 +1,19 @@
 import type { z } from 'zod';
-import type { ArtifactRef, Character, VoiceProfile } from '$lib/core/schemas';
+import type { ArtifactRef, Character, VoiceProfile, WorldElement } from '$lib/core/schemas';
+
+export type VoiceOption = {
+  id: string;
+  gender: 'female' | 'male' | 'neutral' | 'unknown';
+  description: string;
+};
 
 export type StructuredRequest<T> = {
   system: string;
   prompt: string;
   schema: z.ZodType<T>;
   schemaName: string;
+  timeoutMs?: number;
+  providerAttempts?: number;
   onStatus?: (detail: string) => Promise<void>;
 };
 
@@ -28,6 +36,7 @@ export type SpeechRequest = {
 export interface SpeechProvider {
   id: string;
   model: string;
+  voiceOptions: readonly VoiceOption[];
   synthesize(request: SpeechRequest): Promise<ArtifactRef>;
 }
 
@@ -36,8 +45,10 @@ export type ImageRequest = {
   artifactName: string;
   prompt: string;
   characters: Character[];
-  kind: 'character-reference' | 'scene';
+  worldElements: WorldElement[];
+  kind: 'character-reference' | 'world-reference' | 'scene';
   seed: number;
+  styleId: string;
 };
 
 export interface ImageProvider {

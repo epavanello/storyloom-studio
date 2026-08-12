@@ -48,18 +48,21 @@ export class OpenRouterStructuredProvider implements StructuredTextProvider {
   constructor(readonly model: string, private readonly apiKey: string) {}
 
   async generate<T>(request: StructuredRequest<T>): Promise<T> {
+    const timeoutMs = request.timeoutMs ?? 90_000;
+    const maxAttempts = request.providerAttempts ?? 3;
     const messages: { role: 'system' | 'user' | 'assistant'; content: string }[] = [
       { role: 'system', content: `${request.system}\nReturn only the requested structured result. Do not include reasoning or markdown. Every required property must be present; use an empty array when no items are found.` },
       { role: 'user', content: request.prompt }
     ];
     let lastError: unknown;
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
-      await request.onStatus?.(`Waiting for ${this.model} · attempt ${attempt} of 3`);
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const timeoutLabel = timeoutMs >= 120_000 ? `${Math.round(timeoutMs / 60_000)} min` : `${Math.round(timeoutMs / 1_000)}s`;
+      await request.onStatus?.(`OpenRouter request ${attempt} of ${maxAttempts} · timeout ${timeoutLabel}`);
       try {
         const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
           method: 'POST',
           headers: { Authorization: `Bearer ${this.apiKey}`, 'content-type': 'application/json' },
-          signal: AbortSignal.timeout(90_000),
+          signal: AbortSignal.timeout(timeoutMs),
           body: JSON.stringify({
             model: this.model,
             messages,
@@ -76,8 +79,7 @@ export class OpenRouterStructuredProvider implements StructuredTextProvider {
         if (!response.ok) {
           const providerError = new Error(`${response.status} ${response.statusText}: ${errorText}`);
           if (response.status < 500 && response.status !== 408 && response.status !== 429) throw providerError;
-          lastError = providerError;
-          continue;
+          throw providerError;
         }
         const payload = await response.json() as { choices?: { message?: { content?: string | null } }[]; error?: { message?: string } };
         const content = payload.choices?.[0]?.message?.content;
@@ -86,7 +88,7 @@ export class OpenRouterStructuredProvider implements StructuredTextProvider {
           return request.schema.parse(JSON.parse(content));
         } catch (error) {
           lastError = error;
-          if (attempt === 3) break;
+          if (attempt === maxAttempts) break;
           const issues = error instanceof z.ZodError ? error.issues : [{ message: error instanceof Error ? error.message : 'Invalid JSON' }];
           messages.push(
             { role: 'assistant', content },
@@ -95,9 +97,15 @@ export class OpenRouterStructuredProvider implements StructuredTextProvider {
         }
       } catch (error) {
         lastError = error;
-        if (attempt === 3 || (error instanceof Error && /^4\d\d /.test(error.message) && !/^(408|429) /.test(error.message))) throw error;
+        const fatalClientError = error instanceof Error && /^4\d\d /.test(error.message) && !/^(408|429) /.test(error.message);
+        if (fatalClientError) throw error;
+        if (attempt < maxAttempts) {
+          const retryDelayMs = attempt * 2_000;
+          await request.onStatus?.(`OpenRouter request ${attempt} failed · retrying in ${retryDelayMs / 1_000}s`);
+          await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+        }
       }
     }
-    throw new Error(`OpenRouter could not produce ${request.schemaName} after 3 attempts: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
+    throw new Error(`OpenRouter could not produce ${request.schemaName} after ${maxAttempts} requests: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
   }
 }

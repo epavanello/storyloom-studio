@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { ChapterPlan, Character } from '$lib/core/schemas';
 import { ChapterPlanSchema } from '$lib/core/schemas';
 import { saveArtifact, safePart } from '../store';
+import { visualBeatRange } from '$lib/core/plan';
 import type { AlignmentProvider, ImageProvider, ImageRequest, SpeechProvider, SpeechRequest, StructuredRequest, StructuredTextProvider } from './contracts';
 
 function hash(input: string) {
@@ -19,7 +20,7 @@ export class MockStructuredProvider implements StructuredTextProvider {
   model = 'deterministic-demo-v2';
 
   async generate<T>(request: StructuredRequest<T>): Promise<T> {
-    if (request.schemaName === 'character-patch') {
+    if (request.schemaName === 'character-patch' || request.schemaName === 'registry-patch') {
       const chapterId = request.prompt.match(/CHAPTER_ID:\s*([^\n]+)/)?.[1] ?? 'chapter-1';
       const text = chapterText(request.prompt);
       const names = mockCharacterNames(text);
@@ -27,8 +28,9 @@ export class MockStructuredProvider implements StructuredTextProvider {
         id: safePart(name), canonicalName: name, aliases: [],
         physicalDescription: 'Physical appearance is not established in the demo excerpt',
         personality: 'Not established in the demo excerpt', narrativeRole: 'Story character',
+        voiceGender: 'unknown', voiceDescription: 'Neutral demo delivery',
         firstAppearanceChapterId: chapterId, referenceImages: []
-      })) });
+      })), worldElements: [] });
     }
     if (request.schemaName === 'chapter-plan') {
       const chapterId = request.prompt.match(/CHAPTER_ID:\s*([^\n]+)/)?.[1] ?? 'chapter-1';
@@ -44,7 +46,7 @@ function chapterText(prompt: string) {
 }
 
 function characterRegistry(prompt: string): Character[] {
-  const serialized = prompt.split('\n\nCHARACTER_REGISTRY:\n')[1];
+  const serialized = prompt.split('\n\nCHARACTER_REGISTRY:\n')[1]?.split('\n\nWORLD_REGISTRY:')[0];
   if (!serialized) return [];
   try {
     const value = JSON.parse(serialized);
@@ -124,11 +126,18 @@ function mockPlan(chapterId: string, text: string, registry: Character[]): Chapt
       direction: { emotion: quote ? 'engaged' : order % 5 === 0 ? 'intrigue' : 'narrative', intensity: quote ? 0.62 : 0.4, pace: 'natural' as const, pauseAfterMs: quote ? 450 : 280 }
     };
   });
-  const visuals = utterances.filter((_, index) => index === 0 || index % 4 === 0).map((utterance, index) => ({
+  const { minimum } = visualBeatRange(text);
+  const visualIndexes = Array.from({ length: Math.min(minimum, utterances.length) }, (_, index) =>
+    Math.round(index * Math.max(0, utterances.length - 1) / Math.max(1, Math.min(minimum, utterances.length) - 1))
+  );
+  const visuals = visualIndexes.map((utteranceIndex, index) => {
+    const utterance = utterances[utteranceIndex];
+    return ({
     id: `v-${index + 1}`, utteranceId: utterance.id,
     prompt: `Cinematic editorial illustration of this story beat: ${utterance.text}`,
-    characterIds: characterIdsInText(utterance.text, registry), shot: index % 2 ? 'medium shot' : 'wide establishing shot', mood: utterance.direction.emotion
-  }));
+    characterIds: characterIdsInText(utterance.text, registry), worldElementIds: [], shot: index % 2 ? 'medium shot' : 'wide establishing shot', mood: utterance.direction.emotion
+    });
+  });
   return ChapterPlanSchema.parse({
     schemaVersion: 1,
     chapterId,
@@ -150,7 +159,8 @@ export class MockImageProvider implements ImageProvider {
     const title = request.kind === 'character-reference' ? request.characters[0]?.canonicalName ?? 'Character' : 'Generated scene preview';
     const subtitle = request.kind === 'character-reference' ? 'Character reference · locked identity' : request.characters.map((character) => character.canonicalName).join(' · ') || 'Story beat';
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="750" viewBox="0 0 1200 750"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="hsl(${hue} 55% 24%)"/><stop offset="1" stop-color="hsl(${(hue + 70) % 360} 64% 8%)"/></linearGradient><filter id="n"><feTurbulence baseFrequency=".8" numOctaves="3" stitchTiles="stitch"/><feColorMatrix values="1 0 0 0 0 0 1 0 0 0 0 0 1 0 0 0 0 0 .08 0"/></filter></defs><rect width="1200" height="750" fill="url(#g)"/><rect width="1200" height="750" filter="url(#n)" opacity=".35"/><circle cx="910" cy="285" r="175" fill="hsl(${(hue + 22) % 360} 75% 68% / .2)"/><path d="M760 670c32-185 94-280 177-280 86 0 155 96 185 280" fill="hsl(${hue} 25% 96% / .15)"/><text x="76" y="535" fill="#fff" font-family="Georgia,serif" font-size="54" font-weight="600">${xml(title)}</text><text x="80" y="590" fill="#fff" opacity=".65" font-family="Arial,sans-serif" font-size="20" letter-spacing="2">${xml(subtitle.toUpperCase())}</text></svg>`;
-    return saveArtifact(request.bookId, `${request.kind === 'scene' ? 'scenes' : 'characters'}/${safePart(request.artifactName)}.svg`, svg, { mimeType: 'image/svg+xml', provider: this.id, model: this.model });
+    const directory = request.kind === 'scene' ? 'scenes' : request.kind === 'world-reference' ? 'world' : 'characters';
+    return saveArtifact(request.bookId, `${directory}/${safePart(request.artifactName)}.svg`, svg, { mimeType: 'image/svg+xml', provider: this.id, model: this.model, styleId: request.styleId });
   }
 }
 
@@ -167,9 +177,14 @@ function silentWav(durationSeconds: number) {
 
 export class MockSpeechProvider implements SpeechProvider {
   id = 'mock'; model = 'timed-silence';
+  voiceOptions = [
+    { id: 'demo-female', gender: 'female' as const, description: 'demo female voice' },
+    { id: 'demo-male', gender: 'male' as const, description: 'demo male voice' },
+    { id: 'demo-neutral', gender: 'neutral' as const, description: 'demo neutral voice' }
+  ];
   async synthesize(request: SpeechRequest) {
     const duration = Math.max(1.2, request.text.split(/\s+/).length / 2.45 + 0.4);
-    return saveArtifact(request.bookId, `audio/${safePart(request.artifactName)}.wav`, silentWav(duration), { mimeType: 'audio/wav', provider: this.id, model: this.model });
+    return saveArtifact(request.bookId, `audio/${safePart(request.artifactName)}.wav`, silentWav(duration), { mimeType: 'audio/wav', provider: this.id, model: this.model, voiceId: request.voice.voiceId });
   }
 }
 

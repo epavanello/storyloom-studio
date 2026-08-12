@@ -1,7 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import { resolveArtifact, saveArtifact, safePart } from '../store';
 import type { ArtifactRef } from '$lib/core/schemas';
-import type { ImageProvider, ImageRequest, SpeechProvider, SpeechRequest } from './contracts';
+import { geminiVoiceOptions, qwenVoiceOptions } from '../voices';
+import type { ImageProvider, ImageRequest, SpeechProvider, SpeechRequest, VoiceOption } from './contracts';
 
 function authHeaders(apiKey: string): Record<string, string> {
   return apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
@@ -14,6 +15,7 @@ async function fetchChecked(url: string, init: RequestInit) {
 }
 
 export class OpenAiCompatibleSpeechProvider implements SpeechProvider {
+  readonly voiceOptions = qwenVoiceOptions;
   constructor(
     readonly id: string,
     readonly model: string,
@@ -23,6 +25,8 @@ export class OpenAiCompatibleSpeechProvider implements SpeechProvider {
   ) {}
 
   async synthesize(request: SpeechRequest): Promise<ArtifactRef> {
+    const language = request.voice.language === 'it' ? 'Italian' : request.voice.language;
+    const instructions = `Parla esclusivamente in italiano madrelingua. Mantieni stabile l'identità vocale: ${request.voice.description}. Emozione: ${request.emotion}. Intensità espressiva: ${request.intensity} su 1. Ritmo: ${request.pace}. Leggi il testo esattamente, senza aggiunte, omissioni o commenti.`;
     const response = await fetchChecked(`${this.baseUrl.replace(/\/$/, '')}/audio/speech`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...authHeaders(this.apiKey) },
@@ -31,36 +35,55 @@ export class OpenAiCompatibleSpeechProvider implements SpeechProvider {
         input: request.text,
         voice: request.voice.voiceId,
         response_format: this.responseFormat,
-        seed: request.voice.seed,
-        instructions: `Speak in ${request.emotion} emotion, intensity ${request.intensity}, at a ${request.pace} pace.`
+        language,
+        instruct: instructions
       })
     });
     return saveArtifact(
       request.bookId,
       `audio/${safePart(request.artifactName)}.${this.responseFormat}`,
       new Uint8Array(await response.arrayBuffer()),
-      { mimeType: this.responseFormat === 'wav' ? 'audio/wav' : 'audio/mpeg', provider: this.id, model: this.model }
+      {
+        mimeType: this.responseFormat === 'wav' ? 'audio/wav' : 'audio/mpeg', provider: this.id, model: this.model,
+        voiceId: request.voice.voiceId,
+        language,
+        instructions,
+        generationId: response.headers.get('x-generation-id') ?? undefined
+      }
     );
   }
 }
 
 export class OpenRouterSpeechProvider implements SpeechProvider {
   readonly id = 'openrouter';
+  readonly voiceOptions: readonly VoiceOption[];
 
-  constructor(readonly model: string, private readonly apiKey: string, private readonly voices: string[]) {}
+  constructor(readonly model: string, private readonly apiKey: string, voices: string[]) {
+    const catalog = model.startsWith('google/gemini-') ? geminiVoiceOptions : qwenVoiceOptions;
+    this.voiceOptions = voices.map((id) => catalog.find((voice) => voice.id === id) ?? { id, gender: 'unknown' as const, description: 'provider voice' });
+  }
 
   async synthesize(request: SpeechRequest): Promise<ArtifactRef> {
-    const voice = this.voices[Math.abs(request.voice.seed) % this.voices.length];
     const response = await fetchChecked('https://openrouter.ai/api/v1/audio/speech', {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...authHeaders(this.apiKey) },
-      body: JSON.stringify({ model: this.model, input: request.text, voice, response_format: 'mp3' })
+      body: JSON.stringify({
+        model: this.model,
+        input: request.text,
+        voice: request.voice.voiceId,
+        seed: request.voice.seed,
+        response_format: 'mp3'
+      })
     });
     return saveArtifact(
       request.bookId,
       `audio/${safePart(request.artifactName)}.mp3`,
       new Uint8Array(await response.arrayBuffer()),
-      { mimeType: 'audio/mpeg', provider: this.id, model: this.model }
+      {
+        mimeType: 'audio/mpeg', provider: this.id, model: this.model,
+        voiceId: request.voice.voiceId,
+        generationId: response.headers.get('x-generation-id') ?? undefined
+      }
     );
   }
 }
@@ -70,7 +93,10 @@ export class OpenAiCompatibleImageProvider implements ImageProvider {
   constructor(readonly id: string, readonly model: string, private readonly baseUrl: string, private readonly apiKey: string) {}
 
   async generate(request: ImageRequest): Promise<ArtifactRef> {
-    const references = await Promise.all(request.characters.flatMap((character) => character.referenceImages.slice(0, 2)).slice(0, 4).map(async (reference) => {
+    const references = await Promise.all([
+      ...request.characters.flatMap((character) => character.referenceImages.slice(0, 2)),
+      ...request.worldElements.flatMap((element) => element.referenceImages.slice(0, 1))
+    ].slice(0, 4).map(async (reference) => {
       const match = reference.path.match(/^\/api\/artifacts\/([^/]+)\/(.+)$/);
       if (!match) return null;
       try {
@@ -84,12 +110,13 @@ export class OpenAiCompatibleImageProvider implements ImageProvider {
       }
     })).then((items) => items.filter((item): item is NonNullable<typeof item> => item !== null));
     const root = this.baseUrl.replace(/\/$/, '');
+    const size = request.kind === 'scene' ? '1024x576' : '1024x1024';
     const response = references.length
       ? await (() => {
           const form = new FormData();
           form.set('model', this.model);
           form.set('prompt', request.prompt);
-          form.set('size', '1024x1024');
+          form.set('size', size);
           form.set('seed', String(request.seed));
           form.set('steps', '4');
           form.set('guidance_scale', '1');
@@ -101,7 +128,7 @@ export class OpenAiCompatibleImageProvider implements ImageProvider {
       : await fetchChecked(`${root}/images/generations`, {
           method: 'POST',
           headers: { 'content-type': 'application/json', ...authHeaders(this.apiKey) },
-          body: JSON.stringify({ model: this.model, prompt: request.prompt, size: '1024x1024', seed: request.seed, steps: 4, guidance_scale: 1 })
+          body: JSON.stringify({ model: this.model, prompt: request.prompt, size, seed: request.seed, steps: 4, guidance_scale: 1 })
         });
     const payload = await response.json() as { data?: { b64_json?: string; url?: string }[] };
     const result = payload.data?.[0];
@@ -109,7 +136,8 @@ export class OpenAiCompatibleImageProvider implements ImageProvider {
     const bytes = result.b64_json
       ? Uint8Array.from(Buffer.from(result.b64_json, 'base64'))
       : new Uint8Array(await (await fetchChecked(result.url!, {})).arrayBuffer());
-    return saveArtifact(request.bookId, `${request.kind === 'scene' ? 'scenes' : 'characters'}/${safePart(request.artifactName)}.png`, bytes, { mimeType: 'image/png', provider: this.id, model: this.model });
+    const directory = request.kind === 'scene' ? 'scenes' : request.kind === 'world-reference' ? 'world' : 'characters';
+    return saveArtifact(request.bookId, `${directory}/${safePart(request.artifactName)}.png`, bytes, { mimeType: 'image/png', provider: this.id, model: this.model, styleId: request.styleId });
   }
 }
 
@@ -120,7 +148,10 @@ export class OpenRouterImageProvider implements ImageProvider {
   constructor(readonly model: string, private readonly apiKey: string) {}
 
   async generate(request: ImageRequest): Promise<ArtifactRef> {
-    const inputReferences = await Promise.all(request.characters.flatMap((character) => character.referenceImages.slice(0, 2)).map(async (reference) => {
+    const inputReferences = await Promise.all([
+      ...request.characters.flatMap((character) => character.referenceImages.slice(0, 2)),
+      ...request.worldElements.flatMap((element) => element.referenceImages.slice(0, 1))
+    ].map(async (reference) => {
       const match = reference.path.match(/^\/api\/artifacts\/([^/]+)\/(.+)$/);
       if (!match) return null;
       try {
@@ -154,7 +185,8 @@ export class OpenRouterImageProvider implements ImageProvider {
           : new Uint8Array(await (await fetchChecked(result.url!, { signal: AbortSignal.timeout(30_000) })).arrayBuffer());
         const mimeType = result.media_type ?? 'image/png';
         const extension = mimeType === 'image/svg+xml' ? 'svg' : mimeType === 'image/jpeg' ? 'jpg' : mimeType === 'image/webp' ? 'webp' : 'png';
-        return saveArtifact(request.bookId, `${request.kind === 'scene' ? 'scenes' : 'characters'}/${safePart(request.artifactName)}.${extension}`, bytes, { mimeType, provider: this.id, model: this.model });
+        const directory = request.kind === 'scene' ? 'scenes' : request.kind === 'world-reference' ? 'world' : 'characters';
+        return saveArtifact(request.bookId, `${directory}/${safePart(request.artifactName)}.${extension}`, bytes, { mimeType, provider: this.id, model: this.model, styleId: request.styleId });
       } catch (error) {
         lastError = error;
         const message = error instanceof Error ? error.message : String(error);

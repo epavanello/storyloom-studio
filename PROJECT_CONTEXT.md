@@ -50,9 +50,15 @@ Accanto ai personaggi, l'evoluzione naturale del progetto prevede un World/Conti
 
 Il Voice Registry resta separato dal Character Registry. Il seed è utile ma non sufficiente a garantire una voce stabile: quando disponibili vanno conservati anche modello, configurazione, reference audio o embedding, stile di parlato e impostazioni espressive.
 
+Nell'implementazione corrente ogni profilo vocale conserva anche genere vocale richiesto, lingua, provider, modello e voice ID. Il narratore è un profilo esplicito. Il casting usa soltanto voci dichiarate dal provider e privilegia una voce distinta e compatibile con il genere testualmente supportato; se il catalogo non basta, la limitazione non deve essere nascosta.
+
 ### Reference visive
 
 Prima di generare le scene, il sistema crea per ogni personaggio principale una piccola scheda visiva coerente: ritratto frontale, tre quarti, profilo o figura intera secondo necessità.
+
+Per ridurre testo spurio, collage e identità multiple, la reference corrente richiede una sola raffigurazione completa del soggetto su sfondo neutro, senza etichette, pannelli o pose duplicate. Un World Registry minimale può conservare fino a otto luoghi o oggetti davvero centrali; ogni elemento che supera questa selezione riceve una reference coerente, mentre elementi incidentali e generici vengono esclusi prima della generazione.
+
+L'implementazione corrente applica uno stile illustrato da libro animato, versionato e comune a reference e scene, sia nel profilo locale sia in quello cloud. Il planner deve scegliere un numero limitato ma non triviale di momenti visivi distribuiti lungo il capitolo. La UI consente inoltre di rigenerare una singola reference personaggio, rigenerare forzatamente un capitolo e spostare un libro completo nel cestino dati recuperabile.
 
 Ogni immagine di scena deve ricevere soltanto le reference dei personaggi effettivamente presenti, associate in modo esplicito ai rispettivi ruoli nella composizione. Lo stile grafico costituisce una reference separata dall'identità dei personaggi.
 

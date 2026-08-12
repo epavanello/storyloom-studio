@@ -11,7 +11,10 @@ export const load: PageServerLoad = async ({ params, url }) => {
     const rendered = chapterId ? await getRenderedChapter(book.id, chapterId) : null;
     const jobs = await jobsForBook(book.id);
     const config = getConfig();
-    const cloud = config.mode === 'cloud';
+    const usesCloud = (capability: keyof typeof config.policies) => config.mode === 'cloud'
+      || config.mode === 'hybrid' && ['cloud-only', 'cloud-preferred'].includes(config.policies[capability]);
+    const serialized = config.mode === 'local'
+      || config.mode === 'hybrid' && Object.values(config.policies).some((policy) => policy !== 'cloud-only');
     return {
       book,
       chapterId,
@@ -19,10 +22,11 @@ export const load: PageServerLoad = async ({ params, url }) => {
       jobs,
       runtime: {
         mode: config.mode,
-        text: cloud ? config.openRouterLlmModel : config.localLlmModel,
-        speech: cloud ? config.openRouterTtsModel : config.localTtsModel,
-        image: cloud ? config.openRouterImageModel : config.localImageModel,
-        alignment: cloud ? 'proportional · approximate' : config.localAlignerBaseUrl ? 'Qwen3 ForcedAligner · exact' : 'proportional · approximate'
+        serialized,
+        text: usesCloud('text') ? config.openRouterLlmModel : config.localLlmModel,
+        speech: usesCloud('tts') ? config.openRouterTtsModel : config.localTtsModel,
+        image: usesCloud('image') ? config.openRouterImageModel : config.localImageModel,
+        alignment: usesCloud('alignment') ? 'proportional · approximate' : config.localAlignerBaseUrl ? 'Qwen3 ForcedAligner · exact' : 'proportional · approximate'
       }
     };
   } catch {

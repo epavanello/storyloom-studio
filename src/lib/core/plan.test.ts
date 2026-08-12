@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { locateChapterPlanText, validateChapterPlan } from './plan';
+import { locateChapterPlanText, validateChapterPlan, validateVisualBeatCoverage, visualBeatRange } from './plan';
 
 function plan(text: string) {
   return {
@@ -13,7 +13,7 @@ function plan(text: string) {
         direction: { emotion: 'calm', intensity: 0.5, pace: 'natural' as const, pauseAfterMs: 0 }
       }
     ],
-    visuals: [{ id: 'v-1', utteranceId: 'u-1', prompt: 'Anna in the room', characterIds: ['anna'], shot: 'medium', mood: 'calm' }],
+    visuals: [{ id: 'v-1', utteranceId: 'u-1', prompt: 'Anna in the room', characterIds: ['anna'], worldElementIds: [] as string[], shot: 'medium', mood: 'calm' }],
     sounds: []
   };
 }
@@ -35,6 +35,13 @@ describe('chapter plan validation', () => {
     expect(() => validateChapterPlan('Anna entered.', 'chapter-1', ['anna'], changed)).toThrow(/unknown character marco/);
   });
 
+  it('rejects unknown world references', () => {
+    const changed = plan('Anna entered.');
+    changed.visuals[0].worldElementIds = ['castle'];
+    expect(() => validateChapterPlan('Anna entered.', 'chapter-1', ['anna'], changed)).toThrow(/unknown world element castle/);
+    expect(() => validateChapterPlan('Anna entered.', 'chapter-1', ['anna'], changed, ['castle'])).not.toThrow();
+  });
+
   it('deterministically locates verbatim utterances instead of trusting model offsets', () => {
     const source = 'Anna entered.\n\n“Hello,” Marco said.';
     const generated = plan('Anna entered.');
@@ -47,5 +54,10 @@ describe('chapter plan validation', () => {
       { order: 1, textStart: 15, textEnd: source.length }
     ]);
     expect(() => validateChapterPlan(source, 'chapter-1', ['anna'], located)).not.toThrow();
+  });
+
+  it('requires several visual beats for a chapter-sized text', () => {
+    expect(visualBeatRange(Array(600).fill('word').join(' '))).toEqual({ minimum: 3, maximum: 5 });
+    expect(() => validateVisualBeatCoverage(plan('Anna entered.'), 3, 5)).toThrow(/requires 3-5 beats/);
   });
 });

@@ -45,8 +45,8 @@ export function getConfig() {
     localImageModel: env.LOCAL_IMAGE_MODEL ?? 'qwen-image-edit',
     localImageRuntimeModel: env.LOCAL_IMAGE_RUNTIME_MODEL ?? 'mlx-community/flux2-klein-4b-4bit',
     localAlignerBaseUrl: env.LOCAL_ALIGNER_BASE_URL ?? '',
-    openRouterTtsModel: env.OPENROUTER_TTS_MODEL ?? 'qwen/qwen-audio-3.0-tts-flash',
-    openRouterTtsVoices: (env.OPENROUTER_TTS_VOICES ?? 'loongjohn,longanhuan_v3.6').split(',').map((voice) => voice.trim()).filter(Boolean),
+    openRouterTtsModel: env.OPENROUTER_TTS_MODEL ?? 'google/gemini-3.1-flash-tts-preview',
+    openRouterTtsVoices: (env.OPENROUTER_TTS_VOICES ?? 'Zephyr,Puck,Charon,Kore,Fenrir,Leda,Orus,Aoede,Callirrhoe,Autonoe,Enceladus,Iapetus,Umbriel,Algieba,Despina,Erinome,Algenib,Rasalgethi,Laomedeia,Achernar,Alnilam,Schedar,Gacrux,Pulcherrima,Achird,Zubenelgenubi,Vindemiatrix,Sadachbia,Sadaltager,Sulafat').split(',').map((voice) => voice.trim()).filter(Boolean),
     openRouterImageModel: env.OPENROUTER_IMAGE_MODEL ?? 'google/gemini-3.1-flash-image',
     policies: {
       text: env.TEXT_POLICY ?? 'local-preferred',

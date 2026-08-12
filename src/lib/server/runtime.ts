@@ -1,6 +1,6 @@
 import { spawn, execFile } from 'node:child_process';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { promisify } from 'node:util';
 import type { ChildProcess } from 'node:child_process';
 import { getConfig } from './config';
@@ -129,6 +129,7 @@ async function activate(phase: LocalRuntimePhase) {
   }
 
   const cwd = join(home, 'mlx-openai-server');
+  const compatibilityPath = join(process.cwd(), 'runtime', 'mlx-openai-server');
   await startChild(phase, join(cwd, '.venv/bin/mlx-openai-server'), [
     'launch',
     '--model-type', 'image-generation',
@@ -137,7 +138,9 @@ async function activate(phase: LocalRuntimePhase) {
     '--config-name', phase === 'image-edit' ? 'flux2-klein-edit-4b' : 'flux2-klein-4b',
     '--host', '127.0.0.1', '--port', '7862',
     '--queue-timeout', '600', '--queue-size', '4', '--no-log-file'
-  ], cwd, `${config.localImageBaseUrl}/models`);
+  ], cwd, `${config.localImageBaseUrl}/models`, {
+    PYTHONPATH: [compatibilityPath, process.env.PYTHONPATH].filter(Boolean).join(delimiter)
+  });
 }
 
 async function deactivate(phase: LocalRuntimePhase) {
@@ -146,7 +149,11 @@ async function deactivate(phase: LocalRuntimePhase) {
 }
 
 export async function withLocalRuntime<T>(phase: LocalRuntimePhase, task: () => Promise<T>): Promise<T> {
-  if (getConfig().mode !== 'local') return task();
+  const config = getConfig();
+  const capability = phase === 'text' ? 'text' : phase === 'speech' ? 'tts' : phase === 'alignment' ? 'alignment' : 'image';
+  const managesLocalRuntime = config.mode === 'local'
+    || config.mode === 'hybrid' && config.policies[capability] !== 'cloud-only';
+  if (!managesLocalRuntime) return task();
   let unlock!: () => void;
   const previous = state.tail;
   state.tail = new Promise<void>((resolve) => { unlock = resolve; });

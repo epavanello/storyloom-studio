@@ -1,14 +1,18 @@
 import { randomUUID } from 'node:crypto';
 import { parseFile } from 'music-metadata';
 import { z } from 'zod';
-import { BookManifestSchema, ChapterPlanSchema, CharacterSchema, type BookManifest, type Character, type RenderedChapter, type VoiceProfile } from '$lib/core/schemas';
-import { locateChapterPlanText, validateChapterPlan } from '$lib/core/plan';
+import { BookManifestSchema, ChapterPlanSchema, CharacterSchema, WorldElementSchema, type Character, type RenderedChapter, type WorldElement } from '$lib/core/schemas';
+import { locateChapterPlanText, validateChapterPlan, validateVisualBeatCoverage, visualBeatRange } from '$lib/core/plan';
 import { parseBook } from './ingest';
 import { bookDir, getManifest, getRenderedChapter, saveManifest, saveRenderedChapter, safePart } from './store';
 import { providers } from './providers/router';
 import { withLocalRuntime } from './runtime';
+import { assignVoiceProfiles, voiceFor } from './voices';
 
-const CharacterPatchSchema = z.object({ characters: z.array(CharacterSchema) });
+const RegistryPatchSchema = z.object({
+  characters: z.array(CharacterSchema),
+  worldElements: z.array(WorldElementSchema).default([])
+});
 
 export type ProgressUpdate = {
   stepId: string;
@@ -27,8 +31,6 @@ function seed(value: string) {
   return Math.abs(result);
 }
 
-const qwenPresetVoices = ['Vivian', 'Serena', 'Uncle_Fu', 'Dylan', 'Eric', 'Ryan', 'Aiden', 'Ono_Anna', 'Sohee'] as const;
-
 function mergeCharacters(existing: Character[], incoming: Character[]) {
   const merged = [...existing];
   for (const candidate of incoming) {
@@ -39,19 +41,29 @@ function mergeCharacters(existing: Character[], incoming: Character[]) {
       match.aliases = [...new Set([...match.aliases, ...candidate.aliases])];
       if (candidate.physicalDescription.length > match.physicalDescription.length) match.physicalDescription = candidate.physicalDescription;
       if (candidate.personality.length > match.personality.length) match.personality = candidate.personality;
+      if (match.voiceGender === 'unknown' && candidate.voiceGender !== 'unknown') match.voiceGender = candidate.voiceGender;
+      if (candidate.voiceDescription.length > match.voiceDescription.length) match.voiceDescription = candidate.voiceDescription;
     }
   }
   return merged;
 }
 
-function voiceFor(characterId: string | null, manifest: BookManifest): VoiceProfile {
-  if (!characterId) return { characterId: 'narrator', voiceId: 'Serena', seed: seed(`${manifest.id}:narrator`), description: 'Warm, expressive literary narrator' };
-  return manifest.voices.find((voice) => voice.characterId === characterId) ?? {
-    characterId,
-    voiceId: qwenPresetVoices[seed(`${manifest.id}:${characterId}`) % qwenPresetVoices.length],
-    seed: seed(`${manifest.id}:${characterId}`),
-    description: `Stable voice for ${characterId}`
-  };
+function mergeWorldElements(existing: WorldElement[], incoming: WorldElement[]) {
+  const merged = [...existing];
+  for (const candidate of incoming) {
+    const aliases = new Set([candidate.canonicalName.toLowerCase(), ...candidate.aliases.map((alias) => alias.toLowerCase())]);
+    const match = merged.find((element) => element.kind === candidate.kind && [element.canonicalName, ...element.aliases].some((name) => aliases.has(name.toLowerCase())));
+    if (!match) {
+      if (merged.length < 8) merged.push(candidate);
+      continue;
+    }
+    match.aliases = [...new Set([...match.aliases, ...candidate.aliases])];
+    if (candidate.visualDescription.length > match.visualDescription.length) match.visualDescription = candidate.visualDescription;
+    if (candidate.textualEvidence.length > match.textualEvidence.length) match.textualEvidence = candidate.textualEvidence;
+    if (candidate.referencePriority === 'essential') match.referencePriority = 'essential';
+    else if (candidate.referencePriority === 'useful' && match.referencePriority === 'none') match.referencePriority = 'useful';
+  }
+  return merged;
 }
 
 export async function ingestBook(fileName: string, bytes: Uint8Array) {
@@ -60,7 +72,7 @@ export async function ingestBook(fileName: string, bytes: Uint8Array) {
   const id = `${safePart(parsed.title).slice(0, 38)}-${randomUUID().slice(0, 7)}`;
   const manifest = BookManifestSchema.parse({
     schemaVersion: 1, id, title: parsed.title, sourceName: fileName,
-    createdAt: new Date().toISOString(), chapters: parsed.chapters, characters: [], voices: [], registryStatus: 'pending'
+    createdAt: new Date().toISOString(), chapters: parsed.chapters, characters: [], worldElements: [], voices: [], registryStatus: 'pending'
   });
   await saveManifest(manifest);
   return manifest;
@@ -68,59 +80,111 @@ export async function ingestBook(fileName: string, bytes: Uint8Array) {
 
 export async function prepareRegistry(bookId: string, onProgress: ProgressReporter = noProgress) {
   const manifest = await getManifest(bookId);
+  const registryAlreadyAnalyzed = manifest.registryStatus === 'ready' && (manifest.characters.length > 0 || manifest.worldElements.length > 0);
   manifest.registryStatus = 'processing';
   await saveManifest(manifest);
   const service = providers();
   try {
-    await onProgress({ stepId: 'registry-analysis', status: 'running', completed: 0, total: manifest.chapters.length, detail: 'Reading the first chapter' });
-    const registry = await withLocalRuntime('text', async () => {
-      let current = manifest.characters;
+    await onProgress({
+      stepId: 'registry-analysis', status: registryAlreadyAnalyzed ? 'completed' : 'running',
+      completed: registryAlreadyAnalyzed ? manifest.chapters.length : 0, total: manifest.chapters.length,
+      detail: registryAlreadyAnalyzed ? 'Existing continuity registries are current' : 'Reading the first chapter'
+    });
+    const registry = registryAlreadyAnalyzed ? { characters: manifest.characters, worldElements: manifest.worldElements } : await withLocalRuntime('text', async () => {
+      let currentCharacters = manifest.characters;
+      let currentWorldElements = manifest.worldElements;
       for (const [index, chapter] of manifest.chapters.entries()) {
         const patch = await service.text.generate({
-          schema: CharacterPatchSchema,
-          schemaName: 'character-patch',
-          system: 'Extract story characters. Deduplicate against the supplied registry. Never invent physical traits not supported by the text.',
-          prompt: `CHAPTER_ID: ${chapter.id}\nCURRENT_REGISTRY:\n${JSON.stringify(current)}\nCHAPTER_TEXT:\n${chapter.text}`,
+          schema: RegistryPatchSchema,
+          schemaName: 'registry-patch',
+          system: `Update the story registries from textual evidence. Extract characters conservatively and deduplicate against the supplied registry. For every character, set voiceGender to female, male, or neutral only when supported by the text; otherwise use unknown. voiceDescription is a casting direction derived from age, personality, and narrative role, not a canonical physical fact. Never invent physical traits. Also extract only visually identity-defining recurring locations or objects whose consistency would materially matter across scenes. Ignore ordinary rooms, generic furniture, incidental props, and one-off scenery. Mark a truly central anchor essential and every other retained anchor useful; never retain a world element with referencePriority none. Keep at most eight world elements for the entire book.`,
+          prompt: `CHAPTER_ID: ${chapter.id}\nCURRENT_CHARACTERS:\n${JSON.stringify(currentCharacters)}\nCURRENT_WORLD_ELEMENTS:\n${JSON.stringify(currentWorldElements)}\nCHAPTER_TEXT:\n${chapter.text}`,
           onStatus: (detail) => onProgress({ stepId: 'registry-analysis', detail: `${chapter.title} · ${detail}` })
         });
-        current = mergeCharacters(current, patch.characters.map((character) => ({ ...character, id: safePart(character.id || character.canonicalName) })));
-        manifest.characters = current;
+        currentCharacters = mergeCharacters(currentCharacters, patch.characters.map((character) => ({ ...character, id: safePart(character.id || character.canonicalName) })));
+        currentWorldElements = mergeWorldElements(currentWorldElements, patch.worldElements.map((element) => ({ ...element, id: safePart(element.id || element.canonicalName) })));
+        manifest.characters = currentCharacters;
+        manifest.worldElements = currentWorldElements;
         await saveManifest(manifest);
         await onProgress({ stepId: 'registry-analysis', completed: index + 1, total: manifest.chapters.length, detail: `Read ${index + 1} of ${manifest.chapters.length} chapters` });
       }
-      return current;
+      return { characters: currentCharacters, worldElements: currentWorldElements };
     });
     await onProgress({ stepId: 'registry-analysis', status: 'completed', completed: manifest.chapters.length, total: manifest.chapters.length });
-    const missingReferences = registry.filter((character) => !character.referenceImages.length);
-    await onProgress({ stepId: 'registry-references', status: missingReferences.length ? 'running' : 'completed', completed: 0, total: missingReferences.length, detail: missingReferences.length ? 'Generating the first identity sheet' : 'All identity sheets are cached' });
-    if (missingReferences.length) await withLocalRuntime('image-generate', async () => {
-      for (const [index, character] of missingReferences.entries()) {
+    const missingCharacterReferences = registry.characters.filter((character) => !character.referenceImages.some((reference) => reference.styleId === manifest.visualStyle.id));
+    const missingWorldReferences = registry.worldElements.filter((element) => !element.referenceImages.some((reference) => reference.styleId === manifest.visualStyle.id));
+    const missingReferences = missingCharacterReferences.length + missingWorldReferences.length;
+    await onProgress({ stepId: 'registry-references', status: missingReferences ? 'running' : 'completed', completed: 0, total: missingReferences, detail: missingReferences ? 'Generating the first continuity reference' : 'All continuity references are cached' });
+    if (missingReferences) await withLocalRuntime('image-generate', async () => {
+      let completed = 0;
+      for (const character of missingCharacterReferences) {
         const reference = await service.image.generate({
-          bookId, artifactName: `${character.id}-reference`, kind: 'character-reference', characters: [character], seed: seed(`${bookId}:${character.id}`),
-          prompt: `Character reference sheet, neutral background, front portrait and three-quarter view. ${character.canonicalName}. ${character.physicalDescription}. Personality: ${character.personality}. Preserve this identity in later scenes.`
+          bookId, artifactName: `${character.id}-reference-${manifest.visualStyle.id}`, kind: 'character-reference', characters: [character], worldElements: [], seed: seed(`${bookId}:${character.id}:${manifest.visualStyle.id}`), styleId: manifest.visualStyle.id,
+          prompt: `${manifest.visualStyle.prompt} Create exactly one full-body portrait of one fictional character on a plain neutral illustrated background. Subject: ${character.canonicalName}. Canonical traits supported by the book: ${character.physicalDescription}. Casting mood only: ${character.personality}. Use a natural relaxed three-quarter stance and keep the complete silhouette visible. This is a clean visual identity reference, not a designed character sheet. No photography, live-action person, other people, duplicate pose, split screen, collage, panels, inset images, captions, labels, diagrams, arrows, measurements, logos, letters, or readable text.`
         });
-        character.referenceImages = [reference];
-        await onProgress({ stepId: 'registry-references', completed: index + 1, total: missingReferences.length, detail: `Generated ${index + 1} of ${missingReferences.length} identity sheets` });
+        character.referenceImages = [reference, ...character.referenceImages];
+        completed += 1;
+        await onProgress({ stepId: 'registry-references', completed, total: missingReferences, detail: `Generated ${completed} of ${missingReferences} continuity references` });
+      }
+      for (const element of missingWorldReferences) {
+        const reference = await service.image.generate({
+          bookId, artifactName: `${element.id}-reference-${manifest.visualStyle.id}`, kind: 'world-reference', characters: [], worldElements: [element], seed: seed(`${bookId}:${element.id}:${manifest.visualStyle.id}`), styleId: manifest.visualStyle.id,
+          prompt: `${manifest.visualStyle.prompt} Create exactly one clean establishing reference image of the recurring ${element.kind} “${element.canonicalName}”. Canonical visual evidence: ${element.visualDescription}. Continuity role: ${element.continuityRole}. Show one coherent illustrated view with no people unless the evidence explicitly requires them. No photography, alternate versions, split screen, collage, panels, inset images, captions, labels, diagrams, arrows, logos, letters, or readable text.`
+        });
+        element.referenceImages = [reference, ...element.referenceImages];
+        completed += 1;
+        await onProgress({ stepId: 'registry-references', completed, total: missingReferences, detail: `Generated ${completed} of ${missingReferences} continuity references` });
       }
     });
-    await onProgress({ stepId: 'registry-references', status: 'completed', completed: missingReferences.length, total: missingReferences.length });
-    manifest.characters = registry;
-    manifest.voices = registry.map((character) => voiceFor(character.id, manifest));
+    await onProgress({ stepId: 'registry-references', status: 'completed', completed: missingReferences, total: missingReferences });
+    manifest.characters = registry.characters;
+    manifest.worldElements = registry.worldElements;
+    manifest.voices = assignVoiceProfiles(manifest, service.speech);
     manifest.registryStatus = 'ready';
     await saveManifest(manifest);
     return manifest;
   } catch (error) {
-    manifest.registryStatus = 'failed';
+    manifest.registryStatus = registryAlreadyAnalyzed ? 'ready' : 'failed';
     await saveManifest(manifest);
     throw error;
   }
 }
 
-export async function prepareChapter(bookId: string, chapterId: string, onProgress: ProgressReporter = noProgress) {
+export async function regenerateCharacterReference(bookId: string, characterId: string, onProgress: ProgressReporter = noProgress) {
+  const manifest = await getManifest(bookId);
+  const character = manifest.characters.find((candidate) => candidate.id === characterId);
+  if (!character) throw new Error('Character not found');
+  const service = providers();
+  const regenerationId = Date.now();
+  await onProgress({ stepId: 'character-reference', status: 'running', completed: 0, total: 1, detail: `Regenerating ${character.canonicalName}` });
+  const reference = await withLocalRuntime('image-generate', () => service.image.generate({
+    bookId,
+    artifactName: `${character.id}-reference-${manifest.visualStyle.id}-${regenerationId}`,
+    kind: 'character-reference',
+    characters: [character],
+    worldElements: [],
+    seed: seed(`${bookId}:${character.id}:${manifest.visualStyle.id}:${regenerationId}`),
+    styleId: manifest.visualStyle.id,
+    prompt: `${manifest.visualStyle.prompt} Create exactly one full-body portrait of one fictional character on a plain neutral illustrated background. Subject: ${character.canonicalName}. Canonical traits supported by the book: ${character.physicalDescription}. Casting mood only: ${character.personality}. Use a natural relaxed three-quarter stance and keep the complete silhouette visible. This is a clean visual identity reference, not a designed character sheet. No photography, live-action person, other people, duplicate pose, split screen, collage, panels, inset images, captions, labels, diagrams, arrows, measurements, logos, letters, or readable text.`
+  }));
+  character.referenceImages = [reference, ...character.referenceImages];
+  await saveManifest(manifest);
+  await onProgress({ stepId: 'character-reference', status: 'completed', completed: 1, total: 1, detail: `Regenerated ${character.canonicalName}` });
+  return manifest;
+}
+
+export async function prepareChapter(
+  bookId: string,
+  chapterId: string,
+  onProgress: ProgressReporter = noProgress,
+  options: { force?: boolean; generationId?: string } = {}
+) {
   const cached = await getRenderedChapter(bookId, chapterId);
-  if (cached) return cached;
+  if (cached && !options.force) return cached;
   let manifest = await getManifest(bookId);
-  if (manifest.registryStatus !== 'ready') {
+  const referencesOutdated = manifest.characters.some((character) => !character.referenceImages.some((reference) => reference.styleId === manifest.visualStyle.id))
+    || manifest.worldElements.some((element) => !element.referenceImages.some((reference) => reference.styleId === manifest.visualStyle.id));
+  if (manifest.registryStatus !== 'ready' || referencesOutdated) {
     await onProgress({ stepId: 'registry', status: 'running', completed: 0, total: 1, detail: 'Preparing character identities first' });
     const chapterCount = manifest.chapters.length;
     manifest = await prepareRegistry(bookId, async (update) => {
@@ -137,7 +201,16 @@ export async function prepareChapter(bookId: string, chapterId: string, onProgre
   await onProgress({ stepId: 'registry', status: 'completed', completed: 1, total: 1, detail: 'Character registry ready' });
   const chapter = manifest.chapters.find((candidate) => candidate.id === chapterId);
   if (!chapter) throw new Error('Chapter not found');
+  const visualRange = visualBeatRange(chapter.text);
   const service = providers();
+  const generationSuffix = options.generationId ? `-${safePart(options.generationId)}` : '';
+  const voiceRegistryCurrent = manifest.voices.some((voice) => voice.characterId === 'narrator')
+    && manifest.characters.every((character) => manifest.voices.some((voice) => voice.characterId === character.id))
+    && manifest.voices.every((voice) => voice.model === service.speech.model && service.speech.voiceOptions.some((option) => option.id === voice.voiceId));
+  if (!voiceRegistryCurrent) {
+    manifest.voices = assignVoiceProfiles(manifest, service.speech);
+    await saveManifest(manifest);
+  }
   await onProgress({ stepId: 'plan', status: 'running', completed: 0, total: 1, detail: 'Directing the complete chapter' });
   let plan: z.infer<typeof ChapterPlanSchema> | undefined;
   let rejectedPlan: z.infer<typeof ChapterPlanSchema> | undefined;
@@ -151,17 +224,20 @@ export async function prepareChapter(bookId: string, chapterId: string, onProgre
       const candidate = await service.text.generate({
         schema: ChapterPlanSchema,
         schemaName: 'chapter-plan',
-        system: `Create an audiobook performance plan from the complete chapter. Preserve every original word exactly once across ordered utterances: no omissions, additions, summaries, overlaps, or reordered passages. Attribute dialogue only when certain. Choose sparse, meaningful visual beats. Use stable character IDs from the registry. Do not include sound effects unless narratively useful.`,
-        prompt: `CHAPTER_ID: ${chapter.id}\nCHAPTER_TITLE: ${chapter.title}\nCHAPTER_TEXT:\n${chapter.text}\n\nCHARACTER_REGISTRY:\n${JSON.stringify(manifest.characters)}${correction}`,
-        onStatus: (detail) => onProgress({ stepId: 'plan', status: 'running', detail: `${detail} · plan ${planAttempt} of 3` })
+        timeoutMs: 300_000,
+        providerAttempts: 2,
+        system: `Create an audiobook performance plan from the complete chapter. Preserve every original word exactly once across ordered utterances: no omissions, additions, summaries, overlaps, or reordered passages. Attribute dialogue only when certain. Keep adjacent narration by the same speaker in coherent passages, normally 40-220 characters; avoid tiny fragments under 20 characters unless the source contains a genuinely standalone brief line of dialogue. Choose ${visualRange.minimum}-${visualRange.maximum} visually distinct, meaningful visual beats distributed across the whole chapter, including at least one in its opening third and one in its final third. Use stable character and world-element IDs from the registries. Attach a world element only when it is actually visible and continuity-relevant in that scene. Visual prompts describe content and composition, not a competing medium or art style. Do not request realism or photography. Do not include sound effects unless narratively useful.`,
+        prompt: `CHAPTER_ID: ${chapter.id}\nCHAPTER_TITLE: ${chapter.title}\nCHAPTER_TEXT:\n${chapter.text}\n\nCHARACTER_REGISTRY:\n${JSON.stringify(manifest.characters)}\n\nWORLD_REGISTRY:\n${JSON.stringify(manifest.worldElements)}${correction}`,
+        onStatus: (detail) => onProgress({ stepId: 'plan', status: 'running', detail: `${detail} · plan candidate ${planAttempt} of 3` })
       });
       try {
-        plan = validateChapterPlan(
+        plan = validateVisualBeatCoverage(validateChapterPlan(
           chapter.text,
           chapter.id,
           manifest.characters.map((character) => character.id),
-          locateChapterPlanText(chapter.text, candidate)
-        );
+          locateChapterPlanText(chapter.text, candidate),
+          manifest.worldElements.map((element) => element.id)
+        ), visualRange.minimum, visualRange.maximum);
         return;
       } catch (error) {
         rejectedPlan = candidate;
@@ -174,13 +250,13 @@ export async function prepareChapter(bookId: string, chapterId: string, onProgre
   if (!finalPlan) throw new Error('Chapter planner did not produce a validated plan');
   await onProgress({ stepId: 'plan', status: 'completed', completed: 1, total: 1, detail: `${finalPlan.utterances.length} passages and ${finalPlan.visuals.length} visual beats planned` });
 
-  const audioUtterances: { utterance: typeof finalPlan.utterances[number]; audio: Awaited<ReturnType<typeof service.speech.synthesize>>; durationMs: number }[] = [];
+  const audioUtterances: { utterance: typeof finalPlan.utterances[number]; voice: ReturnType<typeof voiceFor>; audio: Awaited<ReturnType<typeof service.speech.synthesize>>; durationMs: number }[] = [];
   await onProgress({ stepId: 'speech', status: 'running', completed: 0, total: finalPlan.utterances.length, detail: 'Generating the first passage' });
   await withLocalRuntime('speech', async () => {
     for (const [index, utterance] of finalPlan.utterances.entries()) {
       const voice = voiceFor(utterance.speakerCharacterId, manifest);
       const audio = await service.speech.synthesize({
-        bookId, artifactName: `${chapter.id}-${utterance.id}`, text: utterance.text, voice,
+        bookId, artifactName: `${chapter.id}-${utterance.id}${generationSuffix}`, text: utterance.text, voice,
         emotion: utterance.direction.emotion, intensity: utterance.direction.intensity, pace: utterance.direction.pace
       });
       let durationMs = Math.max(800, utterance.text.split(/\s+/).length / 2.45 * 1000);
@@ -189,7 +265,7 @@ export async function prepareChapter(bookId: string, chapterId: string, onProgre
         const metadata = await parseFile(`${bookDir(bookId)}/artifacts/${relative}`);
         if (metadata.format.duration) durationMs = metadata.format.duration * 1000;
       } catch { /* use estimate */ }
-      audioUtterances.push({ utterance, audio, durationMs });
+      audioUtterances.push({ utterance, voice, audio, durationMs });
       await onProgress({ stepId: 'speech', completed: index + 1, total: finalPlan.utterances.length, detail: `Generated ${index + 1} of ${finalPlan.utterances.length} passages` });
     }
   });
@@ -201,7 +277,7 @@ export async function prepareChapter(bookId: string, chapterId: string, onProgre
   await withLocalRuntime('alignment', async () => {
     for (const [index, item] of audioUtterances.entries()) {
       const alignment = await service.aligner.align(item.audio.path, item.utterance.text, item.durationMs);
-      renderedUtterances.push({ utterance: item.utterance, audio: item.audio, startMs: timelineMs, durationMs: item.durationMs, words: alignment.words, alignment: alignment.quality });
+      renderedUtterances.push({ utterance: item.utterance, audio: item.audio, voice: { ...item.voice, voiceId: item.audio.voiceId ?? item.voice.voiceId, provider: item.audio.provider, model: item.audio.model }, startMs: timelineMs, durationMs: item.durationMs, words: alignment.words, alignment: alignment.quality });
       timelineMs += item.durationMs + item.utterance.direction.pauseAfterMs;
       await onProgress({ stepId: 'alignment', completed: index + 1, total: audioUtterances.length, detail: `Synchronized ${index + 1} of ${audioUtterances.length} passages` });
     }
@@ -210,30 +286,112 @@ export async function prepareChapter(bookId: string, chapterId: string, onProgre
 
   const visualJobs = finalPlan.visuals.map((cue) => ({
     cue,
-    characters: cue.characterIds.map((id) => manifest.characters.find((character) => character.id === id)).filter(Boolean) as Character[]
+    characters: cue.characterIds.map((id) => manifest.characters.find((character) => character.id === id)).filter(Boolean) as Character[],
+    worldElements: cue.worldElementIds.map((id) => manifest.worldElements.find((element) => element.id === id)).filter(Boolean) as WorldElement[]
   }));
   const renderedVisuals: RenderedChapter['visuals'] = [];
   let completedVisuals = 0;
   await onProgress({ stepId: 'visuals', status: 'running', completed: 0, total: visualJobs.length, detail: visualJobs.length ? 'Staging the first scene' : 'No visual beats requested' });
   const generateVisuals = async (jobs: typeof visualJobs) => {
-    for (const { cue, characters } of jobs) {
+    for (const { cue, characters, worldElements } of jobs) {
       const anchor = renderedUtterances.find((item) => item.utterance.id === cue.utteranceId) ?? renderedUtterances[0];
       const image = await service.image.generate({
-        bookId, artifactName: `${chapter.id}-${cue.id}`, kind: 'scene', characters, seed: seed(`${bookId}:${chapter.id}:${cue.id}`),
-        prompt: `${cue.prompt}\nShot: ${cue.shot}. Mood: ${cue.mood}. Characters: ${characters.map((character) => `${character.canonicalName}: ${character.physicalDescription}`).join('; ')}. Editorial cinematic storybook illustration, no text.`
+        bookId, artifactName: `${chapter.id}-${cue.id}-${manifest.visualStyle.id}${generationSuffix}`, kind: 'scene', characters, worldElements, seed: seed(`${bookId}:${chapter.id}:${cue.id}:${manifest.visualStyle.id}:${options.generationId ?? 'initial'}`), styleId: manifest.visualStyle.id,
+        prompt: `${manifest.visualStyle.prompt} Preserve identity and canonical traits from the supplied references, but render them in this exact illustrated medium rather than preserving photographic media. ${cue.prompt}\nShot: ${cue.shot}. Mood: ${cue.mood}. Characters present: ${characters.map((character) => `${character.canonicalName}: ${character.physicalDescription}`).join('; ') || 'none'}. Recurring visual anchors present: ${worldElements.map((element) => `${element.canonicalName}: ${element.visualDescription}`).join('; ') || 'none'}. Compose as one wide 16:9 cinematic storybook frame with all important subjects inside the central safe area. No photography, live-action frame, 3D render, split screen, collage, panels, captions, subtitles, signage, logos, letters, or readable text.`
       });
       renderedVisuals.push({ cue, image, startMs: anchor?.startMs ?? 0 });
       completedVisuals += 1;
       await onProgress({ stepId: 'visuals', completed: completedVisuals, total: visualJobs.length, detail: `Generated ${completedVisuals} of ${visualJobs.length} scenes` });
     }
   };
-  const plainVisuals = visualJobs.filter(({ characters }) => !characters.some((character) => character.referenceImages.length));
-  const referenceVisuals = visualJobs.filter(({ characters }) => characters.some((character) => character.referenceImages.length));
+  const plainVisuals = visualJobs.filter(({ characters, worldElements }) => !characters.some((character) => character.referenceImages.length) && !worldElements.some((element) => element.referenceImages.length));
+  const referenceVisuals = visualJobs.filter(({ characters, worldElements }) => characters.some((character) => character.referenceImages.length) || worldElements.some((element) => element.referenceImages.length));
   if (plainVisuals.length) await withLocalRuntime('image-generate', () => generateVisuals(plainVisuals));
   if (referenceVisuals.length) await withLocalRuntime('image-edit', () => generateVisuals(referenceVisuals));
   await onProgress({ stepId: 'visuals', status: 'completed', completed: visualJobs.length, total: visualJobs.length });
   renderedVisuals.sort((a, b) => finalPlan.visuals.indexOf(a.cue) - finalPlan.visuals.indexOf(b.cue));
   const rendered = { schemaVersion: 1 as const, chapterId, plan: finalPlan, utterances: renderedUtterances, visuals: renderedVisuals, totalDurationMs: Math.max(1, timelineMs), createdAt: new Date().toISOString() };
+  await saveRenderedChapter(bookId, rendered);
+  return rendered;
+}
+
+export async function regenerateChapterAudio(
+  bookId: string,
+  chapterId: string,
+  generationId: string,
+  onProgress: ProgressReporter = noProgress
+) {
+  const previous = await getRenderedChapter(bookId, chapterId);
+  if (!previous) throw new Error('Prepare the chapter once before regenerating only its audio');
+  const manifest = await getManifest(bookId);
+  const service = providers();
+  const voiceRegistryCurrent = manifest.voices.some((voice) => voice.characterId === 'narrator')
+    && manifest.characters.every((character) => manifest.voices.some((voice) => voice.characterId === character.id))
+    && manifest.voices.every((voice) => voice.model === service.speech.model && service.speech.voiceOptions.some((option) => option.id === voice.voiceId));
+  if (!voiceRegistryCurrent) {
+    manifest.voices = assignVoiceProfiles(manifest, service.speech);
+    await saveManifest(manifest);
+  }
+
+  const suffix = `-${safePart(generationId)}`;
+  const generated: { utterance: typeof previous.plan.utterances[number]; voice: ReturnType<typeof voiceFor>; audio: Awaited<ReturnType<typeof service.speech.synthesize>>; durationMs: number }[] = [];
+  await onProgress({ stepId: 'speech', status: 'running', completed: 0, total: previous.plan.utterances.length, detail: 'Regenerating the first passage in explicit Italian' });
+  await withLocalRuntime('speech', async () => {
+    for (const [index, utterance] of previous.plan.utterances.entries()) {
+      const voice = voiceFor(utterance.speakerCharacterId, manifest);
+      const audio = await service.speech.synthesize({
+        bookId,
+        artifactName: `${chapterId}-${utterance.id}${suffix}`,
+        text: utterance.text,
+        voice,
+        emotion: utterance.direction.emotion,
+        intensity: utterance.direction.intensity,
+        pace: utterance.direction.pace
+      });
+      let durationMs = Math.max(800, utterance.text.split(/\s+/).length / 2.45 * 1000);
+      try {
+        const relative = decodeURIComponent(audio.path.split(`/api/artifacts/${encodeURIComponent(bookId)}/`)[1]);
+        const metadata = await parseFile(`${bookDir(bookId)}/artifacts/${relative}`);
+        if (metadata.format.duration) durationMs = metadata.format.duration * 1000;
+      } catch { /* retain the explicit approximate duration */ }
+      generated.push({ utterance, voice, audio, durationMs });
+      await onProgress({ stepId: 'speech', completed: index + 1, total: previous.plan.utterances.length, detail: `Regenerated ${index + 1} of ${previous.plan.utterances.length} passages` });
+    }
+  });
+  await onProgress({ stepId: 'speech', status: 'completed', completed: generated.length, total: generated.length });
+
+  const utterances: RenderedChapter['utterances'] = [];
+  let timelineMs = 0;
+  await onProgress({ stepId: 'alignment', status: 'running', completed: 0, total: generated.length, detail: 'Realigning the first passage' });
+  await withLocalRuntime('alignment', async () => {
+    for (const [index, item] of generated.entries()) {
+      const alignment = await service.aligner.align(item.audio.path, item.utterance.text, item.durationMs);
+      utterances.push({
+        utterance: item.utterance,
+        audio: item.audio,
+        voice: { ...item.voice, voiceId: item.audio.voiceId ?? item.voice.voiceId, provider: item.audio.provider, model: item.audio.model },
+        startMs: timelineMs,
+        durationMs: item.durationMs,
+        words: alignment.words,
+        alignment: alignment.quality
+      });
+      timelineMs += item.durationMs + item.utterance.direction.pauseAfterMs;
+      await onProgress({ stepId: 'alignment', completed: index + 1, total: generated.length, detail: `Realigned ${index + 1} of ${generated.length} passages` });
+    }
+  });
+  await onProgress({ stepId: 'alignment', status: 'completed', completed: generated.length, total: generated.length });
+
+  const visuals = previous.visuals.map((visual) => ({
+    ...visual,
+    startMs: utterances.find((item) => item.utterance.id === visual.cue.utteranceId)?.startMs ?? 0
+  }));
+  const rendered: RenderedChapter = {
+    ...previous,
+    utterances,
+    visuals,
+    totalDurationMs: Math.max(1, timelineMs),
+    createdAt: new Date().toISOString()
+  };
   await saveRenderedChapter(bookId, rendered);
   return rendered;
 }

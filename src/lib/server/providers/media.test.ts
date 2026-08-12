@@ -1,0 +1,74 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('../store', () => ({
+  safePart: (value: string) => value,
+  resolveArtifact: vi.fn(),
+  saveArtifact: vi.fn(async (_bookId: string, path: string, _data: Uint8Array, meta: Record<string, unknown>) => ({
+    path: `/api/artifacts/book/${path}`,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    ...meta
+  }))
+}));
+
+import { OpenAiCompatibleImageProvider, OpenAiCompatibleSpeechProvider, OpenRouterSpeechProvider } from './media';
+import type { ImageRequest } from './contracts';
+
+describe('OpenRouter speech adapter', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('uses the persisted actor voice directly and records the generation ID', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(new Uint8Array([1, 2, 3]), {
+      status: 200,
+      headers: { 'content-type': 'audio/mpeg', 'x-generation-id': 'gen-123' }
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = new OpenRouterSpeechProvider('google/gemini-3.1-flash-tts-preview', 'test-key', ['Kore', 'Puck']);
+    const artifact = await provider.synthesize({
+      bookId: 'book', artifactName: 'line', text: 'Buongiorno.', emotion: 'calm', intensity: 0.4, pace: 'natural',
+      voice: { characterId: 'anna', voiceId: 'Kore', seed: 42, description: 'firm female voice', gender: 'female', language: 'it', provider: 'openrouter', model: provider.model }
+    });
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    expect(body).toMatchObject({ voice: 'Kore', seed: 42, input: 'Buongiorno.', response_format: 'mp3' });
+    expect(artifact).toMatchObject({ voiceId: 'Kore', generationId: 'gen-123' });
+  });
+});
+
+describe('Local Qwen speech adapter', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('uses the server language and instruct fields instead of auto-detection and an ignored instructions field', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(new Uint8Array([1, 2, 3]), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = new OpenAiCompatibleSpeechProvider('local-tts', 'tts-1-it', 'http://127.0.0.1:7861/v1', '', 'wav');
+    await provider.synthesize({
+      bookId: 'book', artifactName: 'line', text: 'Buongiorno.', emotion: 'calm', intensity: 0.4, pace: 'natural',
+      voice: { characterId: 'narrator', voiceId: 'Serena', seed: 42, description: 'warm narrator', gender: 'female', language: 'it', provider: 'local-tts', model: provider.model }
+    });
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    expect(body).toMatchObject({ language: 'Italian', voice: 'Serena', input: 'Buongiorno.' });
+    expect(body.instruct).toContain('italiano madrelingua');
+    expect(body).not.toHaveProperty('instructions');
+    expect(body).not.toHaveProperty('seed');
+  });
+});
+
+describe('Local image adapter', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('requests native 16:9 scenes and square identity references', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => new Response(JSON.stringify({
+      data: [{ b64_json: Buffer.from([1, 2, 3]).toString('base64') }]
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = new OpenAiCompatibleImageProvider('local-image', 'flux2-klein', 'http://127.0.0.1:7862/v1', '');
+    const baseRequest: Omit<ImageRequest, 'kind'> = {
+      bookId: 'book', artifactName: 'image', prompt: 'A cinematic scene.', characters: [], worldElements: [], seed: 42, styleId: 'illustrated-v1'
+    };
+
+    await provider.generate({ ...baseRequest, kind: 'scene' });
+    await provider.generate({ ...baseRequest, kind: 'character-reference' });
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).size).toBe('1024x576');
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body as string).size).toBe('1024x1024');
+  });
+});

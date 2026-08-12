@@ -15,7 +15,10 @@
 @media(max-width:640px){.jobs-panel{padding:14px}.job-steps{grid-template-columns:1fr}.jobs-heading{align-items:flex-start}.jobs-heading .spinner{flex:0 0 auto}.job-summary>b{font-size:20px}}
 
 /* Scene media uses a stable 16:9 viewport; the script column shares its exact height. */
-.reading-panel{overflow:hidden}.script-scroll{flex:1 1 auto}
+.reading-panel{overflow:hidden}.script-scroll{flex:1 1 auto;scroll-padding-block:16px 56px;scrollbar-gutter:stable;padding-bottom:66px}.character-card small{font-size:9px;color:#8f8579;margin-top:auto}
 @media(min-width:981px){.experience-grid{grid-template-columns:55% 45%;height:auto;aspect-ratio:320/99;align-items:stretch;overflow:hidden}.visual-stage{height:100%;aspect-ratio:16/9}.visual-stage img{height:100%;object-fit:cover}.reading-panel{height:100%;max-height:100%;align-self:stretch}}
 @media(max-width:980px){.experience-grid{height:auto;aspect-ratio:auto}.visual-stage{height:auto;max-height:none;aspect-ratio:16/9}.visual-stage img{height:100%;object-fit:cover}.reading-panel{min-height:250px;max-height:340px}}
 @media(max-width:640px){.visual-stage{height:auto;max-height:none;aspect-ratio:16/9}.reading-panel{min-height:230px;max-height:310px}}
+
+/* Explicit maintenance controls stay visually secondary to the reading experience. */
+.danger-button{margin-top:10px;border:1px solid #b77d70;background:transparent;color:#8e3e2b;padding:9px 12px;font-size:10px;text-align:center}.danger-button:hover{background:#f3e4df}.danger-button:disabled,.debug-action:disabled{cursor:not-allowed;opacity:.45}.debug-action{align-self:flex-start;margin-top:6px;padding:0;border:0;background:transparent;color:var(--accent);font-size:9px;text-decoration:underline;text-underline-offset:3px}.debug-action:hover{color:#8e3e2b}.character-placeholder{padding:10px;text-align:center;font-family:'DM Sans',sans-serif;font-size:10px;line-height:1.35}

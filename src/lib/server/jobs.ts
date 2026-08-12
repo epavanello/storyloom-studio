@@ -1,10 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import type { GenerationJob, GenerationJobStep } from '$lib/core/schemas';
 import { getConfig } from './config';
-import { prepareChapter, prepareRegistry, type ProgressUpdate } from './orchestrator';
+import { prepareChapter, prepareRegistry, regenerateChapterAudio, regenerateCharacterReference, type ProgressUpdate } from './orchestrator';
 import { getManifest, listBooks, listGenerationJobs, saveGenerationJob } from './store';
 
-type JobRequest = { kind: 'registry'; bookId: string } | { kind: 'chapter'; bookId: string; chapterId: string };
+type JobRequest =
+  | { kind: 'registry'; bookId: string }
+  | { kind: 'chapter'; bookId: string; chapterId: string; force?: boolean }
+  | { kind: 'chapter-audio'; bookId: string; chapterId: string }
+  | { kind: 'character-reference'; bookId: string; characterId: string };
 
 type ManagerState = {
   initialized?: Promise<void>;
@@ -30,10 +34,12 @@ function step(id: string, label: string): GenerationJobStep {
 }
 
 function stepsFor(kind: GenerationJob['kind']) {
+  if (kind === 'character-reference') return [step('character-reference', 'Regenerate illustrated character reference')];
+  if (kind === 'chapter-audio') return [step('speech', 'Regenerate narration and dialogue'), step('alignment', 'Realign words and audio')];
   return kind === 'registry'
-    ? [step('registry-analysis', 'Read chapters and identify characters'), step('registry-references', 'Generate identity sheets')]
+    ? [step('registry-analysis', 'Read chapters and build continuity registries'), step('registry-references', 'Generate selected continuity references')]
     : [
-        step('registry', 'Lock character identities'),
+        step('registry', 'Lock character, voice, and world identities'),
         step('plan', 'Direct the chapter'),
         step('speech', 'Generate narration and dialogue'),
         step('alignment', 'Synchronize words and audio'),
@@ -46,11 +52,16 @@ function isActive(job: GenerationJob) {
 }
 
 function sameTarget(job: GenerationJob, request: JobRequest) {
-  return job.kind === request.kind && job.bookId === request.bookId && (request.kind === 'registry' || job.chapterId === request.chapterId);
+  return job.kind === request.kind && job.bookId === request.bookId
+    && (request.kind === 'registry'
+      || (request.kind === 'chapter' || request.kind === 'chapter-audio') && job.chapterId === request.chapterId
+      || request.kind === 'character-reference' && job.characterId === request.characterId);
 }
 
 function serializedMode() {
-  return getConfig().mode === 'local';
+  const config = getConfig();
+  return config.mode === 'local'
+    || config.mode === 'hybrid' && Object.values(config.policies).some((policy) => policy !== 'cloud-only');
 }
 
 async function initialize() {
@@ -112,7 +123,9 @@ async function runJob(jobId: string) {
   });
   try {
     if (job.kind === 'registry') await prepareRegistry(job.bookId, (update) => report(job.id, update));
-    else await prepareChapter(job.bookId, job.chapterId!, (update) => report(job.id, update));
+    else if (job.kind === 'character-reference') await regenerateCharacterReference(job.bookId, job.characterId!, (update) => report(job.id, update));
+    else if (job.kind === 'chapter-audio') await regenerateChapterAudio(job.bookId, job.chapterId!, job.id, (update) => report(job.id, update));
+    else await prepareChapter(job.bookId, job.chapterId!, (update) => report(job.id, update), { force: job.force, generationId: job.id });
     await updateJob(job.id, (current) => {
       current.status = 'completed';
       current.completedAt = new Date().toISOString();
@@ -138,8 +151,10 @@ async function runJob(jobId: string) {
 async function startUnlocked(request: JobRequest) {
   await getManifest(request.bookId);
   const config = getConfig();
-  if (config.mode === 'cloud' && !config.openRouterApiKey) {
-    throw new Error('Cloud mode needs OPENROUTER_API_KEY in .env.storyloom-cloud');
+  const requiresCloud = config.mode === 'cloud'
+    || config.mode === 'hybrid' && Object.values(config.policies).some((policy) => policy === 'cloud-only');
+  if (requiresCloud && !config.openRouterApiKey) {
+    throw new Error(`${config.mode === 'hybrid' ? 'Hybrid' : 'Cloud'} mode needs OPENROUTER_API_KEY`);
   }
   const previous = await listGenerationJobs(request.bookId);
   const duplicate = previous.find((job) => isActive(job) && sameTarget(job, request));
@@ -151,7 +166,9 @@ async function startUnlocked(request: JobRequest) {
     id: `job-${randomUUID()}`,
     kind: request.kind,
     bookId: request.bookId,
-    chapterId: request.kind === 'chapter' ? request.chapterId : undefined,
+    chapterId: request.kind === 'chapter' || request.kind === 'chapter-audio' ? request.chapterId : undefined,
+    characterId: request.kind === 'character-reference' ? request.characterId : undefined,
+    force: request.kind === 'chapter' ? request.force ?? false : false,
     mode: config.mode,
     status: serializedMode() ? 'queued' : 'running',
     queuePosition: null,
