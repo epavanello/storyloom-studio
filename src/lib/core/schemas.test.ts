@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ChapterPlanSchema } from './schemas';
+import { ChapterPlanSchema, GenerationJobSchema } from './schemas';
 
 describe('chapter performance plan', () => {
   it('rejects invalid performance intensity', () => {
@@ -8,5 +8,25 @@ describe('chapter performance plan', () => {
       utterances: [{ id: 'u1', order: 0, text: 'Hello', textStart: 0, textEnd: 5, speakerCharacterId: null, direction: { emotion: 'calm', intensity: 2, pace: 'natural', pauseAfterMs: 0 } }]
     });
     expect(result.success).toBe(false);
+  });
+});
+
+describe('generation job', () => {
+  it('persists queue position and granular progress', () => {
+    const job = GenerationJobSchema.parse({
+      schemaVersion: 1,
+      id: 'job-1',
+      kind: 'chapter',
+      bookId: 'book-1',
+      chapterId: 'chapter-1',
+      mode: 'local',
+      status: 'queued',
+      queuePosition: 2,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      steps: [{ id: 'speech', label: 'Generate speech', status: 'running', completed: 3, total: 7, detail: 'Generated 3 of 7 passages' }]
+    });
+    expect(job.queuePosition).toBe(2);
+    expect(job.steps[0]).toMatchObject({ completed: 3, total: 7 });
   });
 });

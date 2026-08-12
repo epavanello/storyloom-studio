@@ -44,12 +44,33 @@ export class OpenAiCompatibleSpeechProvider implements SpeechProvider {
   }
 }
 
+export class OpenRouterSpeechProvider implements SpeechProvider {
+  readonly id = 'openrouter';
+
+  constructor(readonly model: string, private readonly apiKey: string, private readonly voices: string[]) {}
+
+  async synthesize(request: SpeechRequest): Promise<ArtifactRef> {
+    const voice = this.voices[Math.abs(request.voice.seed) % this.voices.length];
+    const response = await fetchChecked('https://openrouter.ai/api/v1/audio/speech', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...authHeaders(this.apiKey) },
+      body: JSON.stringify({ model: this.model, input: request.text, voice, response_format: 'mp3' })
+    });
+    return saveArtifact(
+      request.bookId,
+      `audio/${safePart(request.artifactName)}.mp3`,
+      new Uint8Array(await response.arrayBuffer()),
+      { mimeType: 'audio/mpeg', provider: this.id, model: this.model }
+    );
+  }
+}
+
 export class OpenAiCompatibleImageProvider implements ImageProvider {
   supportsMultipleReferences = true;
   constructor(readonly id: string, readonly model: string, private readonly baseUrl: string, private readonly apiKey: string) {}
 
   async generate(request: ImageRequest): Promise<ArtifactRef> {
-    const references = await Promise.all(request.characters.flatMap((character) => character.referenceImages.slice(0, 2)).map(async (reference) => {
+    const references = await Promise.all(request.characters.flatMap((character) => character.referenceImages.slice(0, 2)).slice(0, 4).map(async (reference) => {
       const match = reference.path.match(/^\/api\/artifacts\/([^/]+)\/(.+)$/);
       if (!match) return null;
       try {
@@ -89,5 +110,46 @@ export class OpenAiCompatibleImageProvider implements ImageProvider {
       ? Uint8Array.from(Buffer.from(result.b64_json, 'base64'))
       : new Uint8Array(await (await fetchChecked(result.url!, {})).arrayBuffer());
     return saveArtifact(request.bookId, `${request.kind === 'scene' ? 'scenes' : 'characters'}/${safePart(request.artifactName)}.png`, bytes, { mimeType: 'image/png', provider: this.id, model: this.model });
+  }
+}
+
+export class OpenRouterImageProvider implements ImageProvider {
+  readonly id = 'openrouter';
+  readonly supportsMultipleReferences = true;
+
+  constructor(readonly model: string, private readonly apiKey: string) {}
+
+  async generate(request: ImageRequest): Promise<ArtifactRef> {
+    const inputReferences = await Promise.all(request.characters.flatMap((character) => character.referenceImages.slice(0, 2)).map(async (reference) => {
+      const match = reference.path.match(/^\/api\/artifacts\/([^/]+)\/(.+)$/);
+      if (!match) return null;
+      try {
+        const relativePath = match[2].split('/').map(decodeURIComponent).join('/');
+        const bytes = await readFile(resolveArtifact(decodeURIComponent(match[1]), relativePath));
+        return { type: 'image_url', image_url: { url: `data:${reference.mimeType};base64,${bytes.toString('base64')}` } };
+      } catch {
+        return null;
+      }
+    })).then((items) => items.filter((item): item is NonNullable<typeof item> => item !== null));
+    const response = await fetchChecked('https://openrouter.ai/api/v1/images', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...authHeaders(this.apiKey) },
+      body: JSON.stringify({
+        model: this.model,
+        prompt: request.prompt,
+        aspect_ratio: request.kind === 'scene' ? '16:9' : '1:1',
+        resolution: '1K',
+        ...(inputReferences.length ? { input_references: inputReferences } : {})
+      })
+    });
+    const payload = await response.json() as { data?: { b64_json?: string; url?: string; media_type?: string }[] };
+    const result = payload.data?.[0];
+    if (!result) throw new Error('OpenRouter returned no image');
+    const bytes = result.b64_json
+      ? Uint8Array.from(Buffer.from(result.b64_json, 'base64'))
+      : new Uint8Array(await (await fetchChecked(result.url!, {})).arrayBuffer());
+    const mimeType = result.media_type ?? 'image/png';
+    const extension = mimeType === 'image/svg+xml' ? 'svg' : mimeType === 'image/jpeg' ? 'jpg' : mimeType === 'image/webp' ? 'webp' : 'png';
+    return saveArtifact(request.bookId, `${request.kind === 'scene' ? 'scenes' : 'characters'}/${safePart(request.artifactName)}.${extension}`, bytes, { mimeType, provider: this.id, model: this.model });
   }
 }

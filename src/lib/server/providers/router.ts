@@ -1,9 +1,9 @@
 import { getConfig } from '../config';
-import { AiSdkStructuredProvider } from './text';
+import { AiSdkStructuredProvider, OpenRouterStructuredProvider } from './text';
 import { MockImageProvider, MockSpeechProvider, MockStructuredProvider, ProportionalAligner } from './mock';
-import { OpenAiCompatibleImageProvider, OpenAiCompatibleSpeechProvider } from './media';
+import { OpenAiCompatibleImageProvider, OpenAiCompatibleSpeechProvider, OpenRouterImageProvider, OpenRouterSpeechProvider } from './media';
 import { QwenForcedAlignerProvider } from './alignment';
-import type { ImageProvider, ImageRequest, SpeechProvider, SpeechRequest, StructuredRequest, StructuredTextProvider } from './contracts';
+import type { AlignmentProvider, ImageProvider, ImageRequest, SpeechProvider, SpeechRequest, StructuredRequest, StructuredTextProvider } from './contracts';
 
 class FallbackTextProvider implements StructuredTextProvider {
   id: string; model: string;
@@ -23,6 +23,12 @@ class FallbackImageProvider implements ImageProvider {
   async generate(request: ImageRequest) { try { return await this.primary.generate(request); } catch { return this.fallback.generate(request); } }
 }
 
+class FallbackAlignmentProvider implements AlignmentProvider {
+  id: string;
+  constructor(private primary: AlignmentProvider, private fallback: AlignmentProvider) { this.id = `${primary.id}->${fallback.id}`; }
+  async align(audioPath: string, text: string, durationMs: number) { try { return await this.primary.align(audioPath, text, durationMs); } catch { return this.fallback.align(audioPath, text, durationMs); } }
+}
+
 export function providers() {
   const config = getConfig();
   if (config.mode === 'mock') return {
@@ -36,11 +42,13 @@ export function providers() {
     model: config.localLlmModel,
     reasoningEffort: 'none'
   });
-  const cloudText = new AiSdkStructuredProvider({ id: 'openrouter', baseURL: 'https://openrouter.ai/api/v1', apiKey: config.openRouterApiKey, model: config.openRouterLlmModel });
+  const cloudText = new OpenRouterStructuredProvider(config.openRouterLlmModel, config.openRouterApiKey);
   const localSpeech = new OpenAiCompatibleSpeechProvider('local-tts', config.localTtsModel, config.localTtsBaseUrl, '', 'wav');
-  const cloudSpeech = new OpenAiCompatibleSpeechProvider('openrouter', config.openRouterTtsModel, 'https://openrouter.ai/api/v1', config.openRouterApiKey);
+  const cloudSpeech = new OpenRouterSpeechProvider(config.openRouterTtsModel, config.openRouterApiKey, config.openRouterTtsVoices);
   const localImage = new OpenAiCompatibleImageProvider('local-image', config.localImageModel, config.localImageBaseUrl, '');
-  const cloudImage = new OpenAiCompatibleImageProvider('openrouter', config.openRouterImageModel, 'https://openrouter.ai/api/v1', config.openRouterApiKey);
+  const cloudImage = new OpenRouterImageProvider(config.openRouterImageModel, config.openRouterApiKey);
+  const localAligner = config.localAlignerBaseUrl ? new QwenForcedAlignerProvider(config.localAlignerBaseUrl) : new ProportionalAligner();
+  const cloudAligner = new ProportionalAligner();
 
   const choose = <T>(policy: string, local: T, cloud: T, fallback: (primary: T, secondary: T) => T): T => {
     if (config.mode === 'local' || policy === 'local-required') return local;
@@ -52,6 +60,6 @@ export function providers() {
     text: choose<StructuredTextProvider>(config.policies.text, localText, cloudText, (a, b) => new FallbackTextProvider(a, b)),
     speech: choose<SpeechProvider>(config.policies.tts, localSpeech, cloudSpeech, (a, b) => new FallbackSpeechProvider(a, b)),
     image: choose<ImageProvider>(config.policies.image, localImage, cloudImage, (a, b) => new FallbackImageProvider(a, b)),
-    aligner: config.localAlignerBaseUrl ? new QwenForcedAlignerProvider(config.localAlignerBaseUrl) : new ProportionalAligner()
+    aligner: choose<AlignmentProvider>(config.policies.alignment, localAligner, cloudAligner, (a, b) => new FallbackAlignmentProvider(a, b))
   };
 }

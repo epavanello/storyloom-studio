@@ -8,7 +8,11 @@
   },
   "scripts": {
     "dev": "vite dev",
+    "dev:local": "vite dev --mode storyloom-local",
+    "dev:cloud": "vite dev --mode storyloom-cloud",
     "build": "vite build",
+    "build:local": "vite build --mode storyloom-local",
+    "build:cloud": "vite build --mode storyloom-cloud",
     "preview": "vite preview",
     "start": "node build",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",

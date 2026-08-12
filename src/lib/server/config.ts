@@ -19,6 +19,7 @@ export const AppConfigSchema = z.object({
   localImageRuntimeModel: z.string(),
   localAlignerBaseUrl: z.string(),
   openRouterTtsModel: z.string(),
+  openRouterTtsVoices: z.array(z.string()).min(1),
   openRouterImageModel: z.string(),
   policies: z.object({
     text: PolicySchema,
@@ -45,7 +46,8 @@ export function getConfig() {
     localImageRuntimeModel: env.LOCAL_IMAGE_RUNTIME_MODEL ?? 'mlx-community/flux2-klein-4b-4bit',
     localAlignerBaseUrl: env.LOCAL_ALIGNER_BASE_URL ?? '',
     openRouterTtsModel: env.OPENROUTER_TTS_MODEL ?? 'qwen/qwen-audio-3.0-tts-flash',
-    openRouterImageModel: env.OPENROUTER_IMAGE_MODEL ?? 'bytedance/seedream-4.5',
+    openRouterTtsVoices: (env.OPENROUTER_TTS_VOICES ?? 'loongjohn,longanhuan_v3.6').split(',').map((voice) => voice.trim()).filter(Boolean),
+    openRouterImageModel: env.OPENROUTER_IMAGE_MODEL ?? 'google/gemini-3.1-flash-image',
     policies: {
       text: env.TEXT_POLICY ?? 'local-preferred',
       tts: env.TTS_POLICY ?? 'local-preferred',

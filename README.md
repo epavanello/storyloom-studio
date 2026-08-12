@@ -15,6 +15,7 @@ For the complete product vision, boundaries, quality goals, current limitations 
 - Narrator and per-character voice seeds
 - Sequential multi-voice playback with synchronized scene changes and highlighted script
 - Artifact persistence and resumable chapter cache
+- persisted background jobs with per-step progress that survives browser reloads
 - deterministic local demo providers that require no credentials or model downloads
 - responsive chapter player for desktop, medium and mobile viewports
 - Shared Zod schemas for persisted data, model output and TypeScript types
@@ -36,16 +37,16 @@ The built-in `The Observatory` validation render contains 14 real WAV passages, 
 ## Quick start
 
 ```bash
-cp .env.example .env
-npm install
-npm run dev
+cp .env.storyloom-local.example .env.storyloom-local
+pnpm install
+pnpm dev:local
 ```
 
 Set `STORYLOOM_MODE=mock` when model-free development is desired. On the configured target Mac, `.env` is currently set to `local`; open `http://localhost:4173` and select `The Observatory` to inspect the verified render.
 
 ## Local mode
 
-Set `STORYLOOM_MODE=local` and leave the LM Studio API server running on port `1234`. Storyloom owns the heavy-model lifecycle during a pipeline; do not start the media servers separately.
+Use `pnpm dev:local` and leave the LM Studio API server running on port `1234`. Storyloom owns the heavy-model lifecycle during a pipeline; do not start the media servers separately.
 
 The deterministic coordinator executes one heavy phase at a time:
 
@@ -57,7 +58,7 @@ FLUX text-to-image → stop
 FLUX reference edit → stop
 ```
 
-Text work is batched before LM Studio is unloaded. Audio for all utterances is generated before TTS is released, alignment is then performed in its own phase, and plain/reference-conditioned visuals are grouped separately. Concurrent generation requests are serialized through the same coordinator, so adapters cannot independently saturate unified memory.
+Text work is batched before LM Studio is unloaded. Audio for all utterances is generated before TTS is released, alignment is then performed in its own phase, and plain/reference-conditioned visuals are grouped separately. Generation requests from every browser tab become persisted jobs. Local jobs share a global FIFO queue, and the runtime coordinator remains a second safety boundary around individual heavy phases. The UI reconnects automatically after a browser reload and shows the current step plus completed and remaining work.
 
 The media runtime installations live outside the repository under `STORYLOOM_RUNTIME_HOME` (default `~/.local/share/storyloom-studio`). The configured target Mac already contains:
 
@@ -66,6 +67,18 @@ The media runtime installations live outside the repository under `STORYLOOM_RUN
 - `mlx-openai-server/.venv`
 
 Model weights remain in the local Hugging Face and LM Studio caches and are never committed to the project.
+
+## Cloud mode (one OpenRouter key)
+
+```bash
+cp .env.storyloom-cloud.example .env.storyloom-cloud
+# set OPENROUTER_API_KEY in .env.storyloom-cloud
+pnpm dev:cloud
+```
+
+The cloud profile routes structured text, TTS and reference-capable image generation through OpenRouter. It uses `data/cloud` by default, keeping cloud artifacts and job state separate from the local profile. Cloud jobs are not serialized by Storyloom, so independent tabs may run concurrently. OpenRouter does not currently expose a dedicated forced-alignment endpoint: cloud renders therefore use duration-derived proportional word timing and record it as `approximate`, never as exact. No local inference endpoint is called in cloud mode.
+
+The SvelteKit API routes are intentional. Experimental `.remote.ts` functions would provide typed client/server calls, but not durable background execution, cross-tab queueing, or process-independent progress. Keeping jobs as explicit HTTP resources also makes polling and future external clients straightforward while remote functions remain experimental.
 
 ## Hybrid mode
 
@@ -97,10 +110,11 @@ The orchestrator itself makes no creative decisions. The chapter planner reads t
 ## Commands
 
 ```bash
-npm run check
-npm test
-npm run build
-npm start
+pnpm check
+pnpm test
+pnpm build:local
+pnpm build:cloud
+pnpm start
 ```
 
 Generated books and media are written below `data/` and are ignored by Git.

@@ -121,6 +121,32 @@ export const RenderedChapterSchema = z.object({
   createdAt: z.string()
 });
 
+export const GenerationJobStepSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  status: z.enum(['pending', 'running', 'completed', 'failed']),
+  completed: z.number().int().nonnegative(),
+  total: z.number().int().nonnegative(),
+  detail: z.string().optional()
+});
+
+export const GenerationJobSchema = z.object({
+  schemaVersion: z.literal(1),
+  id: z.string(),
+  kind: z.enum(['registry', 'chapter']),
+  bookId: z.string(),
+  chapterId: z.string().optional(),
+  mode: z.enum(['mock', 'local', 'cloud', 'hybrid']),
+  status: z.enum(['queued', 'running', 'completed', 'failed']),
+  queuePosition: z.number().int().positive().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  startedAt: z.string().optional(),
+  completedAt: z.string().optional(),
+  error: z.string().optional(),
+  steps: z.array(GenerationJobStepSchema)
+});
+
 export type ArtifactRef = z.infer<typeof ArtifactRefSchema>;
 export type BookManifest = z.infer<typeof BookManifestSchema>;
 export type Chapter = z.infer<typeof ChapterSchema>;
@@ -128,4 +154,5 @@ export type Character = z.infer<typeof CharacterSchema>;
 export type ChapterPlan = z.infer<typeof ChapterPlanSchema>;
 export type RenderedChapter = z.infer<typeof RenderedChapterSchema>;
 export type VoiceProfile = z.infer<typeof VoiceProfileSchema>;
-
+export type GenerationJob = z.infer<typeof GenerationJobSchema>;
+export type GenerationJobStep = z.infer<typeof GenerationJobStepSchema>;
