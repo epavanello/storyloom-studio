@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { parseFile } from 'music-metadata';
 import { z } from 'zod';
-import { BookManifestSchema, ChapterPlanSchema, CharacterSchema, type BookManifest, type Character, type VoiceProfile } from '$lib/core/schemas';
-import { validateChapterPlan } from '$lib/core/plan';
+import { BookManifestSchema, ChapterPlanSchema, CharacterSchema, type BookManifest, type Character, type RenderedChapter, type VoiceProfile } from '$lib/core/schemas';
+import { locateChapterPlanText, validateChapterPlan } from '$lib/core/plan';
 import { parseBook } from './ingest';
 import { bookDir, getManifest, getRenderedChapter, saveManifest, saveRenderedChapter, safePart } from './store';
 import { providers } from './providers/router';
+import { withLocalRuntime } from './runtime';
 
 const CharacterPatchSchema = z.object({ characters: z.array(CharacterSchema) });
 
@@ -60,24 +61,29 @@ export async function prepareRegistry(bookId: string) {
   await saveManifest(manifest);
   const service = providers();
   try {
-    let registry = manifest.characters;
-    for (const chapter of manifest.chapters) {
-      const patch = await service.text.generate({
-        schema: CharacterPatchSchema,
-        schemaName: 'character-patch',
-        system: 'Extract story characters. Deduplicate against the supplied registry. Never invent physical traits not supported by the text.',
-        prompt: `CHAPTER_ID: ${chapter.id}\nCURRENT_REGISTRY:\n${JSON.stringify(registry)}\nCHAPTER_TEXT:\n${chapter.text}`
-      });
-      registry = mergeCharacters(registry, patch.characters.map((character) => ({ ...character, id: safePart(character.id || character.canonicalName) })));
-    }
-    for (const character of registry) {
-      if (character.referenceImages.length) continue;
-      const reference = await service.image.generate({
-        bookId, artifactName: `${character.id}-reference`, kind: 'character-reference', characters: [character], seed: seed(`${bookId}:${character.id}`),
-        prompt: `Character reference sheet, neutral background, front portrait and three-quarter view. ${character.canonicalName}. ${character.physicalDescription}. Personality: ${character.personality}. Preserve this identity in later scenes.`
-      });
-      character.referenceImages = [reference];
-    }
+    const registry = await withLocalRuntime('text', async () => {
+      let current = manifest.characters;
+      for (const chapter of manifest.chapters) {
+        const patch = await service.text.generate({
+          schema: CharacterPatchSchema,
+          schemaName: 'character-patch',
+          system: 'Extract story characters. Deduplicate against the supplied registry. Never invent physical traits not supported by the text.',
+          prompt: `CHAPTER_ID: ${chapter.id}\nCURRENT_REGISTRY:\n${JSON.stringify(current)}\nCHAPTER_TEXT:\n${chapter.text}`
+        });
+        current = mergeCharacters(current, patch.characters.map((character) => ({ ...character, id: safePart(character.id || character.canonicalName) })));
+      }
+      return current;
+    });
+    const missingReferences = registry.filter((character) => !character.referenceImages.length);
+    if (missingReferences.length) await withLocalRuntime('image-generate', async () => {
+      for (const character of missingReferences) {
+        const reference = await service.image.generate({
+          bookId, artifactName: `${character.id}-reference`, kind: 'character-reference', characters: [character], seed: seed(`${bookId}:${character.id}`),
+          prompt: `Character reference sheet, neutral background, front portrait and three-quarter view. ${character.canonicalName}. ${character.physicalDescription}. Personality: ${character.personality}. Preserve this identity in later scenes.`
+        });
+        character.referenceImages = [reference];
+      }
+    });
     manifest.characters = registry;
     manifest.voices = registry.map((character) => voiceFor(character.id, manifest));
     manifest.registryStatus = 'ready';
@@ -98,43 +104,67 @@ export async function prepareChapter(bookId: string, chapterId: string) {
   const chapter = manifest.chapters.find((candidate) => candidate.id === chapterId);
   if (!chapter) throw new Error('Chapter not found');
   const service = providers();
-  const generatedPlan = await service.text.generate({
+  const generatedPlan = await withLocalRuntime('text', () => service.text.generate({
     schema: ChapterPlanSchema,
     schemaName: 'chapter-plan',
     system: `Create an audiobook performance plan from the complete chapter. Preserve every original word exactly across utterances and attribute dialogue only when certain. Choose sparse, meaningful visual beats. Use stable character IDs from the registry. Do not include sound effects unless narratively useful.`,
     prompt: `CHAPTER_ID: ${chapter.id}\nCHAPTER_TITLE: ${chapter.title}\nCHAPTER_TEXT:\n${chapter.text}\n\nCHARACTER_REGISTRY:\n${JSON.stringify(manifest.characters)}`
+  }));
+  const plan = validateChapterPlan(
+    chapter.text,
+    chapter.id,
+    manifest.characters.map((character) => character.id),
+    locateChapterPlanText(chapter.text, generatedPlan)
+  );
+
+  const audioUtterances: { utterance: typeof plan.utterances[number]; audio: Awaited<ReturnType<typeof service.speech.synthesize>>; durationMs: number }[] = [];
+  await withLocalRuntime('speech', async () => {
+    for (const utterance of plan.utterances) {
+      const voice = voiceFor(utterance.speakerCharacterId, manifest);
+      const audio = await service.speech.synthesize({
+        bookId, artifactName: `${chapter.id}-${utterance.id}`, text: utterance.text, voice,
+        emotion: utterance.direction.emotion, intensity: utterance.direction.intensity, pace: utterance.direction.pace
+      });
+      let durationMs = Math.max(800, utterance.text.split(/\s+/).length / 2.45 * 1000);
+      try {
+        const relative = decodeURIComponent(audio.path.split(`/api/artifacts/${encodeURIComponent(bookId)}/`)[1]);
+        const metadata = await parseFile(`${bookDir(bookId)}/artifacts/${relative}`);
+        if (metadata.format.duration) durationMs = metadata.format.duration * 1000;
+      } catch { /* use estimate */ }
+      audioUtterances.push({ utterance, audio, durationMs });
+    }
   });
-  const plan = validateChapterPlan(chapter.text, chapter.id, manifest.characters.map((character) => character.id), generatedPlan);
 
-  const renderedUtterances = [];
+  const renderedUtterances: RenderedChapter['utterances'] = [];
   let timelineMs = 0;
-  for (const utterance of plan.utterances) {
-    const voice = voiceFor(utterance.speakerCharacterId, manifest);
-    const audio = await service.speech.synthesize({
-      bookId, artifactName: `${chapter.id}-${utterance.id}`, text: utterance.text, voice,
-      emotion: utterance.direction.emotion, intensity: utterance.direction.intensity, pace: utterance.direction.pace
-    });
-    let durationMs = Math.max(800, utterance.text.split(/\s+/).length / 2.45 * 1000);
-    try {
-      const relative = decodeURIComponent(audio.path.split(`/api/artifacts/${encodeURIComponent(bookId)}/`)[1]);
-      const metadata = await parseFile(`${bookDir(bookId)}/artifacts/${relative}`);
-      if (metadata.format.duration) durationMs = metadata.format.duration * 1000;
-    } catch { /* use estimate */ }
-    const alignment = await service.aligner.align(audio.path, utterance.text, durationMs);
-    renderedUtterances.push({ utterance, audio, startMs: timelineMs, durationMs, words: alignment.words, alignment: alignment.quality });
-    timelineMs += durationMs + utterance.direction.pauseAfterMs;
-  }
+  await withLocalRuntime('alignment', async () => {
+    for (const item of audioUtterances) {
+      const alignment = await service.aligner.align(item.audio.path, item.utterance.text, item.durationMs);
+      renderedUtterances.push({ utterance: item.utterance, audio: item.audio, startMs: timelineMs, durationMs: item.durationMs, words: alignment.words, alignment: alignment.quality });
+      timelineMs += item.durationMs + item.utterance.direction.pauseAfterMs;
+    }
+  });
 
-  const renderedVisuals = [];
-  for (const cue of plan.visuals) {
-    const anchor = renderedUtterances.find((item) => item.utterance.id === cue.utteranceId) ?? renderedUtterances[0];
-    const characters = cue.characterIds.map((id) => manifest.characters.find((character) => character.id === id)).filter(Boolean) as Character[];
-    const image = await service.image.generate({
-      bookId, artifactName: `${chapter.id}-${cue.id}`, kind: 'scene', characters, seed: seed(`${bookId}:${chapter.id}:${cue.id}`),
-      prompt: `${cue.prompt}\nShot: ${cue.shot}. Mood: ${cue.mood}. Characters: ${characters.map((character) => `${character.canonicalName}: ${character.physicalDescription}`).join('; ')}. Editorial cinematic storybook illustration, no text.`
-    });
-    renderedVisuals.push({ cue, image, startMs: anchor?.startMs ?? 0 });
-  }
+  const visualJobs = plan.visuals.map((cue) => ({
+    cue,
+    characters: cue.characterIds.map((id) => manifest.characters.find((character) => character.id === id)).filter(Boolean) as Character[]
+  }));
+  const renderedVisuals: RenderedChapter['visuals'] = [];
+  const generateVisuals = async (jobs: typeof visualJobs) => {
+    for (const { cue, characters } of jobs) {
+      const anchor = renderedUtterances.find((item) => item.utterance.id === cue.utteranceId) ?? renderedUtterances[0];
+      const image = await service.image.generate({
+        bookId, artifactName: `${chapter.id}-${cue.id}`, kind: 'scene', characters, seed: seed(`${bookId}:${chapter.id}:${cue.id}`),
+        prompt: `${cue.prompt}\nShot: ${cue.shot}. Mood: ${cue.mood}. Characters: ${characters.map((character) => `${character.canonicalName}: ${character.physicalDescription}`).join('; ')}. Editorial cinematic storybook illustration, no text.`
+      });
+      renderedVisuals.push({ cue, image, startMs: anchor?.startMs ?? 0 });
+    }
+  };
+  const plainVisuals = visualJobs.filter(({ characters }) => !characters.some((character) => character.referenceImages.length));
+  const referenceVisuals = visualJobs.filter(({ characters }) => characters.some((character) => character.referenceImages.length));
+  if (plainVisuals.length) await withLocalRuntime('image-generate', () => generateVisuals(plainVisuals));
+  if (referenceVisuals.length) await withLocalRuntime('image-edit', () => generateVisuals(referenceVisuals));
+  renderedVisuals.sort((a, b) => plan.visuals.indexOf(a.cue) - plan.visuals.indexOf(b.cue));
   const rendered = { schemaVersion: 1 as const, chapterId, plan, utterances: renderedUtterances, visuals: renderedVisuals, totalDurationMs: Math.max(1, timelineMs), createdAt: new Date().toISOString() };
   await saveRenderedChapter(bookId, rendered);
   return rendered;

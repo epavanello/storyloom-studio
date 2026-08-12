@@ -218,8 +218,8 @@ Questa base dimostra la forma del sistema, ma non ancora la qualità del prodott
 
 - il Character Registry della demo usa euristiche semplici e produce falsi positivi;
 - l'allineamento disponibile è approssimativo, non un forced alignment reale;
-- TTS e immagini reali non sono stati validati end-to-end sul Mac target;
-- il lifecycle coordinato dei modelli locali è ancora da implementare;
+- TTS, forced alignment e immagini reali sono stati validati end-to-end sul Mac target con il Capitolo I del demo;
+- il lifecycle locale coordina fasi sequenziali LLM, TTS, aligner, FLUX text-to-image e FLUX reference-edit, scaricando ogni runtime prima del successivo;
 - la cache non è ancora indirizzata da contenuto e configurazione;
 - la validazione automatica della coerenza delle immagini non è presente;
 - alcune affermazioni del README descrivono l'architettura prevista più che capacità già verificate.
@@ -301,4 +301,3 @@ Queste decisioni non vanno inventate da una sessione AI se cambiano materialment
 ## Brief sintetico per una nuova sessione AI
 
 > Storyloom Studio è un PoC local-first che trasforma libri EPUB/PDF/TXT in capitoli audiovisivi on demand. Il testo originale resta immutabile; un Chapter Planner legge l'intero capitolo e produce annotazioni strutturate per speaker, emozioni, pause, scene e continuità. Character e Voice Registry stabilizzano identità visive e vocali. L'orchestratore è deterministico e coordina provider locali/cloud per analisi, TTS, forced alignment e immagini condizionate dalle reference. La priorità è validare una verticale qualitativa completa su un capitolo, non generare l'intero libro. La demo esistente prova il flusso ma usa ancora estrazione personaggi e allineamento approssimativi; i provider reali e il lifecycle dei modelli locali devono essere validati sul Mac target.
-

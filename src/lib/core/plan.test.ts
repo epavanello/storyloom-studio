@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { validateChapterPlan } from './plan';
+import { locateChapterPlanText, validateChapterPlan } from './plan';
 
 function plan(text: string) {
   return {
@@ -33,5 +33,19 @@ describe('chapter plan validation', () => {
     const changed = plan('Anna entered.');
     changed.visuals[0].characterIds = ['marco'];
     expect(() => validateChapterPlan('Anna entered.', 'chapter-1', ['anna'], changed)).toThrow(/unknown character marco/);
+  });
+
+  it('deterministically locates verbatim utterances instead of trusting model offsets', () => {
+    const source = 'Anna entered.\n\n“Hello,” Marco said.';
+    const generated = plan('Anna entered.');
+    generated.utterances.push({
+      ...generated.utterances[0], id: 'u-2', order: 2, text: '“Hello,” Marco said.', textStart: 99, textEnd: 100
+    });
+    const located = locateChapterPlanText(source, generated);
+    expect(located.utterances.map(({ order, textStart, textEnd }) => ({ order, textStart, textEnd }))).toEqual([
+      { order: 0, textStart: 0, textEnd: 13 },
+      { order: 1, textStart: 15, textEnd: source.length }
+    ]);
+    expect(() => validateChapterPlan(source, 'chapter-1', ['anna'], located)).not.toThrow();
   });
 });

@@ -21,14 +21,17 @@ For the complete product vision, boundaries, quality goals, current limitations 
 
 The default demo uses procedural SVGs, silent timed audio and approximate proportional word timing. It validates the application flow, not the creative quality of real inference.
 
-## Implemented but not yet end-to-end validated
+## Real local vertical validated
 
-- LM Studio/OpenAI-compatible text adapter
-- OpenAI-compatible speech and image adapters
-- local, cloud and hybrid routing policies
-- reference-image payloads for providers that genuinely support them
+The local stack has been exercised end to end on an Apple M4 Max with 36 GB unified memory:
 
-Real local media generation still requires compatible TTS, image and forced-alignment runtimes. See [PROJECT_CONTEXT.md](./PROJECT_CONTEXT.md) for the validation criteria and current roadmap.
+- Qwen3.6 35B A3B 4-bit in LM Studio for structured character extraction and chapter planning
+- Qwen3-TTS 1.7B CustomVoice 8-bit through a local MLX OpenAI-compatible endpoint
+- Qwen3 ForcedAligner 0.6B for exact word timestamps
+- FLUX.2 Klein 4B MLX 4-bit for 1024 px character sheets and scenes
+- FLUX.2 multi-reference editing for scenes that contain locked characters
+
+The built-in `The Observatory` validation render contains 14 real WAV passages, exact alignment, five generated scenes and a 61-second synchronized timeline. No cloud provider or mock artifact participates in that render.
 
 ## Quick start
 
@@ -38,18 +41,31 @@ npm install
 npm run dev
 ```
 
-The default `STORYLOOM_MODE=mock` requires no model or API key. Open `http://localhost:4173`, choose the built-in demo, prepare its registry and render a chapter to exercise the complete local demo pipeline.
+Set `STORYLOOM_MODE=mock` when model-free development is desired. On the configured target Mac, `.env` is currently set to `local`; open `http://localhost:4173` and select `The Observatory` to inspect the verified render.
 
 ## Local mode
 
-Set `STORYLOOM_MODE=local`. The text adapter targets LM Studio's OpenAI-compatible endpoint. Enable these LM Studio server settings:
+Set `STORYLOOM_MODE=local` and leave the LM Studio API server running on port `1234`. Storyloom owns the heavy-model lifecycle during a pipeline; do not start the media servers separately.
 
-- Just-In-Time model loading
-- Auto-unload unused JIT models
-- Only keep the last JIT-loaded model
-- A short idle TTL, such as five minutes
+The deterministic coordinator executes one heavy phase at a time:
 
-TTS and image adapters expect OpenAI-compatible local endpoints. They intentionally live behind Storyloom's own contracts, so a model-specific runner can be integrated without changing the orchestrator.
+```text
+LM Studio text → unload
+Qwen3-TTS → stop
+Qwen3 ForcedAligner → stop
+FLUX text-to-image → stop
+FLUX reference edit → stop
+```
+
+Text work is batched before LM Studio is unloaded. Audio for all utterances is generated before TTS is released, alignment is then performed in its own phase, and plain/reference-conditioned visuals are grouped separately. Concurrent generation requests are serialized through the same coordinator, so adapters cannot independently saturate unified memory.
+
+The media runtime installations live outside the repository under `STORYLOOM_RUNTIME_HOME` (default `~/.local/share/storyloom-studio`). The configured target Mac already contains:
+
+- `qwen3-tts-api/.venv-mlx`
+- `qwen3-aligner/.venv`
+- `mlx-openai-server/.venv`
+
+Model weights remain in the local Hugging Face and LM Studio caches and are never committed to the project.
 
 ## Hybrid mode
 
@@ -71,7 +87,8 @@ SvelteKit UI
       -> Vercel AI SDK text adapter (LM Studio / OpenRouter)
       -> speech adapter (local / OpenRouter)
       -> image adapter (local / OpenRouter)
-      -> alignment adapter
+      -> forced-alignment adapter
+    -> shared local runtime coordinator (load, batch, release)
     -> validated immutable artifacts
 ```
 

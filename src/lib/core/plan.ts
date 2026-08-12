@@ -1,5 +1,20 @@
 import { ChapterPlanSchema, type ChapterPlan } from './schemas';
 
+export function locateChapterPlanText(sourceText: string, value: unknown): ChapterPlan {
+  const plan = ChapterPlanSchema.parse(value);
+  let cursor = 0;
+  return {
+    ...plan,
+    utterances: plan.utterances.map((utterance, index) => {
+      const textStart = sourceText.indexOf(utterance.text, cursor);
+      if (textStart < 0) return { ...utterance, order: index };
+      const textEnd = textStart + utterance.text.length;
+      cursor = textEnd;
+      return { ...utterance, order: index, textStart, textEnd };
+    })
+  };
+}
+
 function duplicateValues(values: string[]) {
   const seen = new Set<string>();
   const duplicates = new Set<string>();

@@ -89,7 +89,7 @@
         </a>
       {/each}
     </nav>
-    <div class="runtime-card"><span><i></i> Runtime</span><strong>Demo provider</strong><small>Configure local or cloud models in .env</small></div>
+    <div class="runtime-card"><span><i></i> Runtime · {data.runtime.mode}</span><strong>{data.runtime.mode === 'mock' ? 'Demo provider' : data.runtime.text}</strong><small>{data.runtime.mode === 'mock' ? 'Configure local or cloud models in .env' : `${data.runtime.speech} · ${data.runtime.image}`}</small></div>
   </aside>
 
   <main class="studio-main">

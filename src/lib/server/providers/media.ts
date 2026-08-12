@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { saveArtifact, safePart } from '../store';
+import { resolveArtifact, saveArtifact, safePart } from '../store';
 import type { ArtifactRef } from '$lib/core/schemas';
 import type { ImageProvider, ImageRequest, SpeechProvider, SpeechRequest } from './contracts';
 
@@ -51,19 +51,37 @@ export class OpenAiCompatibleImageProvider implements ImageProvider {
   async generate(request: ImageRequest): Promise<ArtifactRef> {
     const references = await Promise.all(request.characters.flatMap((character) => character.referenceImages.slice(0, 2)).map(async (reference) => {
       const match = reference.path.match(/^\/api\/artifacts\/([^/]+)\/(.+)$/);
-      if (!match) return reference.path;
+      if (!match) return null;
       try {
-        const bytes = await readFile(new URL(`../../../../../data/books/${decodeURIComponent(match[1])}/artifacts/${decodeURIComponent(match[2])}`, import.meta.url));
-        return `data:${reference.mimeType};base64,${bytes.toString('base64')}`;
+        const relativePath = match[2].split('/').map(decodeURIComponent).join('/');
+        return {
+          bytes: await readFile(resolveArtifact(decodeURIComponent(match[1]), relativePath)),
+          mimeType: reference.mimeType
+        };
       } catch {
-        return reference.path;
+        return null;
       }
-    }));
-    const response = await fetchChecked(`${this.baseUrl.replace(/\/$/, '')}/images/generations`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', ...authHeaders(this.apiKey) },
-      body: JSON.stringify({ model: this.model, prompt: request.prompt, size: '1024x640', seed: request.seed, reference_images: references })
-    });
+    })).then((items) => items.filter((item): item is NonNullable<typeof item> => item !== null));
+    const root = this.baseUrl.replace(/\/$/, '');
+    const response = references.length
+      ? await (() => {
+          const form = new FormData();
+          form.set('model', this.model);
+          form.set('prompt', request.prompt);
+          form.set('size', '1024x1024');
+          form.set('seed', String(request.seed));
+          form.set('steps', '4');
+          form.set('guidance_scale', '1');
+          for (const [index, reference] of references.entries()) {
+            form.append('image', new Blob([reference.bytes], { type: reference.mimeType }), `reference-${index}.png`);
+          }
+          return fetchChecked(`${root}/images/edits`, { method: 'POST', headers: authHeaders(this.apiKey), body: form });
+        })()
+      : await fetchChecked(`${root}/images/generations`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', ...authHeaders(this.apiKey) },
+          body: JSON.stringify({ model: this.model, prompt: request.prompt, size: '1024x1024', seed: request.seed, steps: 4, guidance_scale: 1 })
+        });
     const payload = await response.json() as { data?: { b64_json?: string; url?: string }[] };
     const result = payload.data?.[0];
     if (!result) throw new Error('Image provider returned no image');
