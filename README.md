@@ -4,19 +4,31 @@ Local-first proof of concept for turning EPUB, PDF and plain-text books into syn
 
 For the complete product vision, boundaries, quality goals, current limitations and recommended roadmap, read [PROJECT_CONTEXT.md](./PROJECT_CONTEXT.md). Future implementation sessions should treat that document as product intent and verify every claimed capability against the current code.
 
-## What works
+## Verified locally
 
 - EPUB, PDF and TXT ingestion with deterministic chapter splitting
-- Incremental, schema-validated character extraction and deduplication
-- Stable character and voice registries
+- schema-validated Character and Voice registries
+- deterministic demo character extraction without external models
 - Reference-sheet generation before scene generation
 - Full-chapter creative planning into typed utterances, performance directions, visual beats and sound cues
+- deterministic validation that the performance plan preserves the original chapter text and uses valid references
 - Narrator and per-character voice seeds
 - Sequential multi-voice playback with synchronized scene changes and highlighted script
 - Artifact persistence and resumable chapter cache
-- Local, cloud, hybrid and deterministic demo providers
-- Strict execution policies per capability
+- deterministic local demo providers that require no credentials or model downloads
+- responsive chapter player for desktop, medium and mobile viewports
 - Shared Zod schemas for persisted data, model output and TypeScript types
+
+The default demo uses procedural SVGs, silent timed audio and approximate proportional word timing. It validates the application flow, not the creative quality of real inference.
+
+## Implemented but not yet end-to-end validated
+
+- LM Studio/OpenAI-compatible text adapter
+- OpenAI-compatible speech and image adapters
+- local, cloud and hybrid routing policies
+- reference-image payloads for providers that genuinely support them
+
+Real local media generation still requires compatible TTS, image and forced-alignment runtimes. See [PROJECT_CONTEXT.md](./PROJECT_CONTEXT.md) for the validation criteria and current roadmap.
 
 ## Quick start
 
@@ -26,7 +38,7 @@ npm install
 npm run dev
 ```
 
-The default `STORYLOOM_MODE=mock` requires no model or API key. Open the built-in demo, prepare its registry and render a chapter to exercise the complete pipeline.
+The default `STORYLOOM_MODE=mock` requires no model or API key. Open `http://localhost:4173`, choose the built-in demo, prepare its registry and render a chapter to exercise the complete local demo pipeline.
 
 ## Local mode
 

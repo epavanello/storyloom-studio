@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { parseFile } from 'music-metadata';
 import { z } from 'zod';
 import { BookManifestSchema, ChapterPlanSchema, CharacterSchema, type BookManifest, type Character, type VoiceProfile } from '$lib/core/schemas';
+import { validateChapterPlan } from '$lib/core/plan';
 import { parseBook } from './ingest';
 import { bookDir, getManifest, getRenderedChapter, saveManifest, saveRenderedChapter, safePart } from './store';
 import { providers } from './providers/router';
@@ -92,12 +93,13 @@ export async function prepareChapter(bookId: string, chapterId: string) {
   const chapter = manifest.chapters.find((candidate) => candidate.id === chapterId);
   if (!chapter) throw new Error('Chapter not found');
   const service = providers();
-  const plan = await service.text.generate({
+  const generatedPlan = await service.text.generate({
     schema: ChapterPlanSchema,
     schemaName: 'chapter-plan',
     system: `Create an audiobook performance plan from the complete chapter. Preserve every original word exactly across utterances and attribute dialogue only when certain. Choose sparse, meaningful visual beats. Use stable character IDs from the registry. Do not include sound effects unless narratively useful.`,
     prompt: `CHAPTER_ID: ${chapter.id}\nCHAPTER_TITLE: ${chapter.title}\nCHAPTER_TEXT:\n${chapter.text}\n\nCHARACTER_REGISTRY:\n${JSON.stringify(manifest.characters)}`
   });
+  const plan = validateChapterPlan(chapter.text, chapter.id, manifest.characters.map((character) => character.id), generatedPlan);
 
   const renderedUtterances = [];
   let timelineMs = 0;
@@ -132,4 +134,3 @@ export async function prepareChapter(bookId: string, chapterId: string) {
   await saveRenderedChapter(bookId, rendered);
   return rendered;
 }
-
