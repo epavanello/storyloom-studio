@@ -6,7 +6,7 @@
   let { data } = $props();
   let rendered = $state<RenderedChapter | null>(null);
   let jobs = $state<GenerationJob[]>([]);
-  let queues = $state<QueueSnapshot[]>([]);
+  let queue = $state<QueueSnapshot | null>(null);
   let requestError = $state('');
   let activeIndex = $state(0);
   let activeTimeMs = $state(0);
@@ -24,11 +24,8 @@
   const registryJobActive = $derived(activeJobs.some((job) => job.kind === 'registry'));
   const latestRelevantJob = $derived(jobs.find((job) => (job.kind === 'chapter' && job.chapterId === data.chapterId) || (job.kind === 'registry' && data.book.registryStatus !== 'ready')));
   const failedJob = $derived(latestRelevantJob?.status === 'failed' ? latestRelevantJob : undefined);
-  // A queued job on a queue nobody is draining would wait forever with no explanation:
-  // that is exactly the case where a user's own worker is not running.
-  const strandedQueues = $derived(
-    queues.filter((queue) => !queue.hasWorker && activeJobs.some((job) => job.queueName === queue.name))
-  );
+  // Work queued with nothing draining it would wait forever and look like a hang.
+  const stranded = $derived(Boolean(activeJobs.length && queue && !queue.hasWorker));
 
   $effect(() => {
     const chapterId = data.chapterId;
@@ -46,7 +43,7 @@
 
   $effect(() => {
     jobs = data.jobs;
-    queues = data.queues;
+    queue = data.queue;
   });
 
   onMount(() => {
@@ -61,9 +58,9 @@
     try {
       const response = await fetch(`/api/jobs?bookId=${encodeURIComponent(data.book.id)}`, { cache: 'no-store' });
       if (!response.ok) return;
-      const payload = await response.json() as { jobs: GenerationJob[]; queues: QueueSnapshot[] };
+      const payload = await response.json() as { jobs: GenerationJob[]; queue: QueueSnapshot };
       jobs = payload.jobs;
-      queues = payload.queues;
+      queue = payload.queue;
       if (hadActiveJobs && !jobs.some((job) => job.status === 'queued' || job.status === 'active')) await invalidateAll();
     } catch {
       // A transient polling failure should not hide the last reported progress.
@@ -145,7 +142,7 @@
       {/each}
     </nav>
     <div class="runtime-card"><span><i></i> Runtime · {data.runtime.mode}</span><strong>{data.runtime.mode === 'mock' ? 'Demo provider' : data.runtime.text}</strong><small>{data.runtime.mode === 'mock' ? 'Configure local or cloud models in .env' : `${data.runtime.speech} · ${data.runtime.image} · ${data.runtime.alignment}`}</small></div>
-    <nav class="side-links"><a href="/jobs">Job queue</a><a href="/settings">Settings · {data.execution === 'local' ? 'own machine' : 'cloud'}</a></nav>
+    <nav class="side-links"><a href="/jobs">Job queue</a><a href="/settings">Settings</a></nav>
   </aside>
 
   <main class="studio-main">
@@ -160,8 +157,8 @@
     {#if activeJobs.length}
       <section class="jobs-panel" aria-live="polite">
         <div class="jobs-heading"><div class="spinner"></div><div><strong>Storyloom is still working</strong><span>Progress is held in the queue, so it survives a browser reload and a server restart.</span></div></div>
-        {#if strandedQueues.length}
-          <p class="queue-warning">No worker is connected to <code>{strandedQueues.map((queue) => queue.name).join(', ')}</code>. This job will wait until one is. {data.execution === 'local' ? 'Start `pnpm worker` on the machine that holds your models.' : 'The deployment has no cloud worker running.'}</p>
+        {#if stranded}
+          <p class="queue-warning">No worker is draining the queue, so this job will wait until one is. {data.workerMode === 'inline' ? 'The web process should be running a worker — check its logs.' : 'Start `pnpm worker` on the machine that runs inference.'}</p>
         {/if}
         {#each activeJobs as job}
           <article class="job-card">

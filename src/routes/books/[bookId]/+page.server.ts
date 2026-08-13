@@ -1,8 +1,7 @@
 import { error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
-import { getUserSettings } from '$lib/server/accounts';
 import { getConfig } from '$lib/server/config';
-import { jobsForUser, queueSnapshotsForUser } from '$lib/server/jobs';
+import { jobsForUser, queueHealth } from '$lib/server/jobs';
 import { requireUser } from '$lib/server/session';
 import { BookNotFoundError, getManifest, getRenderedChapter } from '$lib/server/store';
 
@@ -17,11 +16,10 @@ export const load: PageServerLoad = async ({ locals, params, url }) => {
   }
 
   const chapterId = url.searchParams.get('chapter') ?? book.chapters[0]?.id;
-  const [rendered, jobs, queues, settings] = await Promise.all([
+  const [rendered, jobs, queue] = await Promise.all([
     chapterId ? getRenderedChapter(book.id, chapterId) : Promise.resolve(null),
     jobsForUser(user.id, { bookId: book.id, limit: 20 }),
-    queueSnapshotsForUser(user.id).catch(() => []),
-    getUserSettings(user.id)
+    queueHealth().catch(() => null)
   ]);
 
   const config = getConfig();
@@ -31,8 +29,8 @@ export const load: PageServerLoad = async ({ locals, params, url }) => {
     chapterId,
     rendered,
     jobs,
-    queues,
-    execution: settings.execution,
+    queue,
+    workerMode: config.worker.mode,
     runtime: {
       mode: config.mode,
       text: cloud ? config.openRouterLlmModel : config.localLlmModel,

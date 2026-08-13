@@ -31,7 +31,6 @@ suite('distributed generation pipeline', () => {
     store: typeof import('./store');
     jobs: typeof import('./jobs');
     orchestrator: typeof import('./orchestrator');
-    queueNames: typeof import('./queue/names');
     queues: typeof import('./queue/queues');
     worker: typeof import('./queue/worker');
     connection: typeof import('./queue/connection');
@@ -55,7 +54,6 @@ suite('distributed generation pipeline', () => {
       store: await import('./store'),
       jobs: await import('./jobs'),
       orchestrator: await import('./orchestrator'),
-      queueNames: await import('./queue/names'),
       queues: await import('./queue/queues'),
       worker: await import('./queue/worker'),
       connection: await import('./queue/connection'),
@@ -109,15 +107,16 @@ suite('distributed generation pipeline', () => {
     await expect(modules.jobs.startGenerationJob(stranger, { kind: 'registry', bookId })).rejects.toThrow();
   });
 
-  it('queues work without executing it, and reports it as waiting', async () => {
+  it('queues work without executing it, and reports that nothing is draining the queue', async () => {
     const manifest = await modules.store.getManifest(owner, bookId);
     const job = await modules.jobs.startGenerationJob(owner, { kind: 'chapter', bookId, chapterId: manifest.chapters[0].id });
     expect(job.status).toBe('queued');
-    expect(job.executionTarget).toBe('cloud');
-    expect(job.queueName).toBe(modules.queueNames.CLOUD_QUEUE);
 
-    const snapshot = await modules.queues.queueSnapshot(modules.queueNames.CLOUD_QUEUE);
-    expect(snapshot.waiting + snapshot.active).toBeGreaterThan(0);
+    const snapshot = await modules.queues.queueSnapshot();
+    expect(snapshot.waiting).toBe(1);
+    // No worker has been started yet, and the dashboard is able to say so rather than
+    // leaving the job looking like a hang.
+    expect(snapshot.hasWorker).toBe(false);
 
     // A second request for the same target joins the queued job instead of duplicating it.
     const again = await modules.jobs.startGenerationJob(owner, { kind: 'chapter', bookId, chapterId: manifest.chapters[0].id });
@@ -125,7 +124,7 @@ suite('distributed generation pipeline', () => {
   }, 30_000);
 
   it('runs the queued job on a separate worker and stores the render', async () => {
-    const running = modules.worker.startWorkers([modules.queueNames.CLOUD_QUEUE]);
+    const running = modules.worker.startWorker();
     stop = running.stop;
 
     const manifest = await modules.store.getManifest(owner, bookId);
@@ -162,23 +161,16 @@ suite('distributed generation pipeline', () => {
     expect(await modules.accounts.getProviderCredential(stranger, 'openrouter')).toBeNull();
   });
 
-  it('parks work on a private queue when the account runs its own machine', async () => {
-    await modules.accounts.saveUserSettings(owner, { execution: 'local' });
+  it('refuses to delete a book while work on it is unfinished', async () => {
+    // The worker from the previous test is stopped first, so the job stays queued long
+    // enough to assert on.
+    await stop();
+    stop = async () => {};
     const job = await modules.jobs.startGenerationJob(owner, { kind: 'registry', bookId });
-    expect(job.executionTarget).toBe('local');
-    expect(job.queueName).toBe(modules.queueNames.localQueueFor(owner));
 
-    // Only the cloud queue has a worker in this test, so the job stays put and the
-    // dashboard is able to say why.
-    const snapshot = await modules.queues.queueSnapshot(job.queueName);
-    expect(snapshot.waiting).toBe(1);
-    expect(snapshot.hasWorker).toBe(false);
-
-    // And a book with unfinished work cannot be deleted out from under a worker.
     await expect(modules.jobs.assertNoActiveJobs(owner, bookId)).rejects.toThrow(/queued or running/);
     expect((await modules.jobs.cancelJob(owner, job.id)).status).toBe('cancelled');
     await expect(modules.jobs.assertNoActiveJobs(owner, bookId)).resolves.toBeUndefined();
-    await modules.accounts.saveUserSettings(owner, { execution: 'cloud' });
   }, 30_000);
 
   it('removes objects and rows together when the owner deletes a book', async () => {

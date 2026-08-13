@@ -44,8 +44,6 @@ CREATE TABLE "jobs" (
 	"chapter_id" text,
 	"kind" text NOT NULL,
 	"status" text DEFAULT 'queued' NOT NULL,
-	"execution_target" text NOT NULL,
-	"queue_name" text NOT NULL,
 	"mode" text NOT NULL,
 	"attempts" integer DEFAULT 0 NOT NULL,
 	"steps" jsonb DEFAULT '[]'::jsonb NOT NULL,
@@ -99,13 +97,6 @@ CREATE TABLE "user" (
 	CONSTRAINT "user_email_unique" UNIQUE("email")
 );
 --> statement-breakpoint
-CREATE TABLE "user_settings" (
-	"user_id" text PRIMARY KEY NOT NULL,
-	"execution" text DEFAULT 'cloud' NOT NULL,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
-);
---> statement-breakpoint
 CREATE TABLE "verification" (
 	"id" text PRIMARY KEY NOT NULL,
 	"identifier" text NOT NULL,
@@ -123,7 +114,6 @@ ALTER TABLE "jobs" ADD CONSTRAINT "jobs_book_id_books_id_fk" FOREIGN KEY ("book_
 ALTER TABLE "provider_credentials" ADD CONSTRAINT "provider_credentials_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "rendered_chapters" ADD CONSTRAINT "rendered_chapters_book_id_books_id_fk" FOREIGN KEY ("book_id") REFERENCES "public"."books"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "session" ADD CONSTRAINT "session_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "user_settings" ADD CONSTRAINT "user_settings_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "account_user_id_idx" ON "account" USING btree ("user_id");--> statement-breakpoint
 CREATE INDEX "books_user_id_created_at_idx" ON "books" USING btree ("user_id","created_at");--> statement-breakpoint
 CREATE INDEX "chapters_book_id_order_idx" ON "chapters" USING btree ("book_id","order");--> statement-breakpoint

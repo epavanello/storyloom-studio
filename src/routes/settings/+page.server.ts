@@ -1,42 +1,32 @@
 import { fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
-import { deleteProviderCredential, getUserSettings, listCredentialHints, saveUserSettings, setProviderCredential } from '$lib/server/accounts';
+import { deleteProviderCredential, listCredentialHints, setProviderCredential } from '$lib/server/accounts';
 import { getConfig } from '$lib/server/config';
-import { queueSnapshotsForUser } from '$lib/server/jobs';
-import { localQueueFor } from '$lib/server/queue/names';
+import { queueHealth } from '$lib/server/jobs';
 import { requireUser } from '$lib/server/session';
 
 export const load: PageServerLoad = async ({ locals }) => {
   const user = requireUser(locals);
   const config = getConfig();
-  const [settings, credentials, queues] = await Promise.all([
-    getUserSettings(user.id),
+  const [credentials, queue] = await Promise.all([
     listCredentialHints(user.id),
-    queueSnapshotsForUser(user.id).catch(() => [])
+    queueHealth().catch(() => null)
   ]);
   return {
-    settings,
     credentials,
-    queues,
-    // Shown so a user configuring their own machine can copy the exact value.
-    localQueue: localQueueFor(user.id),
+    queue,
     deployment: {
       mode: config.mode,
       storage: config.storage.driver,
       workerMode: config.worker.mode,
-      hasPlatformKey: Boolean(config.openRouterApiKey)
+      hasPlatformKey: Boolean(config.openRouterApiKey),
+      /** Whether a cloud key is used at all on this deployment. */
+      usesCloud: Object.values(config.policies).some((policy) => policy !== 'local-required') && config.mode !== 'mock' && config.mode !== 'local'
     }
   };
 };
 
 export const actions: Actions = {
-  execution: async ({ locals, request }) => {
-    const user = requireUser(locals);
-    const value = String((await request.formData()).get('execution') ?? '');
-    if (value !== 'cloud' && value !== 'local') return fail(400, { message: 'Unknown execution target.' });
-    await saveUserSettings(user.id, { execution: value });
-    return { saved: 'execution' };
-  },
   saveKey: async ({ locals, request }) => {
     const user = requireUser(locals);
     const value = String((await request.formData()).get('openrouter') ?? '').trim();

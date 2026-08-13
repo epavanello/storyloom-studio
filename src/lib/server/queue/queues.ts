@@ -2,7 +2,12 @@ import { Queue } from 'bullmq';
 import type { QueueSnapshot } from '../../core/schemas';
 import { getConfig } from '../config';
 import { getRedis } from './connection';
-import { targetOfQueue } from './names';
+
+/**
+ * One queue for the whole deployment. A deployment is either cloud or local — it is
+ * never both — so where a job runs is a property of the deployment, not of the job.
+ */
+export const JOBS_QUEUE = 'storyloom-jobs';
 
 /** Everything a worker needs to run a job; the durable detail stays in Postgres. */
 export type JobPayload = {
@@ -41,17 +46,16 @@ export function getQueue(name: string) {
   return queue;
 }
 
-export async function queueSnapshot(name: string): Promise<QueueSnapshot> {
+export async function queueSnapshot(name = JOBS_QUEUE): Promise<QueueSnapshot> {
   const queue = getQueue(name);
   const [counts, workers] = await Promise.all([
     queue.getJobCounts('waiting', 'active', 'delayed', 'completed', 'failed'),
-    // Surfacing this matters: a local queue with no worker means the user's own machine
-    // is offline and the job would wait indefinitely without explanation.
+    // Surfacing this matters: with no worker attached, a job waits indefinitely and the
+    // user deserves to be told why rather than watching a spinner.
     queue.getWorkers().catch(() => [])
   ]);
   return {
     name,
-    target: targetOfQueue(name),
     waiting: counts.waiting ?? 0,
     active: counts.active ?? 0,
     delayed: counts.delayed ?? 0,
@@ -61,8 +65,8 @@ export async function queueSnapshot(name: string): Promise<QueueSnapshot> {
   };
 }
 
-/** 1-based position among the jobs still waiting on the same queue. */
-export async function waitingPosition(name: string, jobId: string) {
+/** 1-based position among the jobs still waiting. */
+export async function waitingPosition(jobId: string, name = JOBS_QUEUE) {
   const waiting = await getQueue(name).getWaiting(0, 500);
   const index = waiting.findIndex((job) => job.id === jobId);
   return index >= 0 ? index + 1 : null;

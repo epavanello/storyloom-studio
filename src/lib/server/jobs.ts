@@ -1,20 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq, inArray } from 'drizzle-orm';
-import {
-  GenerationJobSchema,
-  type ExecutionTarget,
-  type GenerationJob,
-  type GenerationJobStep,
-  type QueueSnapshot
-} from '../core/schemas';
-import { getUserSettings } from './accounts';
+import { GenerationJobSchema, type GenerationJob, type GenerationJobStep } from '../core/schemas';
 import { getConfig } from './config';
 import { getDb } from './db/client';
 import { jobs } from './db/schema';
 import type { ProgressUpdate } from './orchestrator';
 import { forgetLiveJob, isCancellationRequested, publishJobState, readLiveJob, readLiveJobs, requestCancellation } from './queue/live';
-import { CLOUD_QUEUE, localQueueFor, queueFor } from './queue/names';
-import { getQueue, queueSnapshot, waitingPosition, type JobPayload } from './queue/queues';
+import { getQueue, JOBS_QUEUE, queueSnapshot, waitingPosition, type JobPayload } from './queue/queues';
 import { assertBookOwner } from './store';
 
 export type JobRequest =
@@ -56,8 +48,6 @@ function toJob(row: JobRow, queuePosition: number | null = null): GenerationJob 
     chapterId: row.chapterId,
     userId: row.userId,
     mode: row.mode,
-    executionTarget: row.executionTarget,
-    queueName: row.queueName,
     status: row.status,
     queuePosition,
     attempts: row.attempts,
@@ -87,17 +77,14 @@ async function findActiveJob(bookId: string, request: JobRequest) {
 
 /**
  * Accepts a generation request: it validates ownership, records the durable job row and
- * hands the work to the queue that matches where the user wants inference to run.
+ * hands the work to the queue. Where that work actually executes is a property of the
+ * deployment — a worker attached to this queue is either a cloud worker or a local one.
  */
 export async function startGenerationJob(userId: string, request: JobRequest): Promise<GenerationJob> {
   await assertBookOwner(userId, request.bookId);
-  const settings = await getUserSettings(userId);
   const existing = await findActiveJob(request.bookId, request);
   if (existing) return decorate(toJob(existing));
 
-  const config = getConfig();
-  const target: ExecutionTarget = settings.execution;
-  const queueName = queueFor(target, userId);
   const row = {
     id: `job-${randomUUID()}`,
     userId,
@@ -105,9 +92,7 @@ export async function startGenerationJob(userId: string, request: JobRequest): P
     chapterId: request.kind === 'chapter' ? request.chapterId : null,
     kind: request.kind,
     status: 'queued' as const,
-    executionTarget: target,
-    queueName,
-    mode: config.mode,
+    mode: getConfig().mode,
     steps: stepsFor(request.kind)
   };
 
@@ -130,7 +115,7 @@ export async function startGenerationJob(userId: string, request: JobRequest): P
     chapterId: row.chapterId,
     kind: row.kind
   };
-  await getQueue(queueName).add(row.kind, payload, { jobId: row.id });
+  await getQueue(JOBS_QUEUE).add(row.kind, payload, { jobId: row.id });
 
   const [stored] = await db.select().from(jobs).where(eq(jobs.id, row.id)).limit(1);
   const job = toJob(stored);
@@ -140,7 +125,7 @@ export async function startGenerationJob(userId: string, request: JobRequest): P
 
 async function decorate(job: GenerationJob): Promise<GenerationJob> {
   if (job.status !== 'queued') return job;
-  return { ...job, queuePosition: await waitingPosition(job.queueName, job.id).catch(() => null) };
+  return { ...job, queuePosition: await waitingPosition(job.id).catch(() => null) };
 }
 
 /**
@@ -173,9 +158,9 @@ export async function getJob(userId: string, jobId: string) {
   return row ? decorate(toJob(row)) : null;
 }
 
-/** The queues that can carry this user's work, with their current depth. */
-export async function queueSnapshotsForUser(userId: string): Promise<QueueSnapshot[]> {
-  return Promise.all([queueSnapshot(CLOUD_QUEUE), queueSnapshot(localQueueFor(userId))]);
+/** Current depth of the deployment's queue and whether anything is draining it. */
+export async function queueHealth() {
+  return queueSnapshot();
 }
 
 export async function cancelJob(userId: string, jobId: string) {
@@ -186,7 +171,7 @@ export async function cancelJob(userId: string, jobId: string) {
 
   // Remove it from the queue if it has not started; if it has, the running worker
   // observes the cancellation flag at its next step boundary.
-  const queued = await getQueue(row.queueName).getJob(jobId);
+  const queued = await getQueue(JOBS_QUEUE).getJob(jobId);
   if (queued && !(await queued.isActive())) await queued.remove().catch(() => {});
   await requestCancellation(jobId);
 

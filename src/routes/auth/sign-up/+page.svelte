@@ -33,7 +33,7 @@
   <div class="auth-card">
     <a class="brand" href="/" aria-label="Storyloom home"><span class="brand-mark">S</span><span>Storyloom</span></a>
     <h1>Create your studio</h1>
-    <p class="auth-lede">You bring your own inference: add an OpenRouter key, or point your own machine at your private queue.</p>
+    <p class="auth-lede">Your books, characters and renders stay private to your account.</p>
 
     {#if data.allowSignUp}
       <form onsubmit={submit}>

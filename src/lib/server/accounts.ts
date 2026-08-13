@@ -1,28 +1,11 @@
 import { and, eq } from 'drizzle-orm';
-import type { ExecutionTarget } from '../core/schemas';
 import { getDb } from './db/client';
-import { providerCredentials, userSettings } from './db/schema';
+import { providerCredentials } from './db/schema';
 import { openSecret, sealSecret } from './secrets';
-
-export type UserSettings = { execution: ExecutionTarget };
 
 /** Providers a user can bring their own key for. */
 export const credentialProviders = ['openrouter'] as const;
 export type CredentialProvider = (typeof credentialProviders)[number];
-
-export async function getUserSettings(userId: string): Promise<UserSettings> {
-  const db = getDb();
-  const [row] = await db.select().from(userSettings).where(eq(userSettings.userId, userId)).limit(1);
-  return { execution: row?.execution ?? 'cloud' };
-}
-
-export async function saveUserSettings(userId: string, patch: Partial<UserSettings>) {
-  const db = getDb();
-  await db
-    .insert(userSettings)
-    .values({ userId, ...patch })
-    .onConflictDoUpdate({ target: userSettings.userId, set: { ...patch, updatedAt: new Date() } });
-}
 
 export async function setProviderCredential(userId: string, provider: CredentialProvider, value: string) {
   const trimmed = value.trim();

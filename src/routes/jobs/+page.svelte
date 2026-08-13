@@ -5,12 +5,12 @@
 
   let { data } = $props();
   let jobs = $state<GenerationJob[]>([]);
-  let queues = $state<QueueSnapshot[]>([]);
+  let queue = $state<QueueSnapshot | null>(null);
   let message = $state('');
 
   $effect(() => {
     jobs = data.jobs;
-    queues = data.queues;
+    queue = data.queue;
   });
 
   const unfinished = $derived(jobs.filter((job) => job.status === 'queued' || job.status === 'active'));
@@ -25,9 +25,9 @@
     try {
       const response = await fetch('/api/jobs?limit=60', { cache: 'no-store' });
       if (!response.ok) return;
-      const payload = await response.json() as { jobs: GenerationJob[]; queues: QueueSnapshot[] };
+      const payload = await response.json() as { jobs: GenerationJob[]; queue: QueueSnapshot };
       jobs = payload.jobs;
-      queues = payload.queues;
+      queue = payload.queue;
     } catch {
       // Keep the last known state rather than blanking the dashboard on a hiccup.
     }
@@ -79,11 +79,11 @@
     <span>{unfinished.length} unfinished</span>
   </section>
 
-  <div class="queue-grid">
-    {#each queues as queue}
+  {#if queue}
+    <div class="queue-grid">
       <article class="queue-card" class:stalled={!queue.hasWorker && queue.waiting > 0}>
         <div class="queue-head">
-          <strong>{queue.target === 'cloud' ? 'Shared cloud queue' : 'Your machine'}</strong>
+          <strong>Generation queue · {data.deployment.mode}</strong>
           <span class:online={queue.hasWorker}>{queue.hasWorker ? 'worker online' : 'no worker'}</span>
         </div>
         <code>{queue.name}</code>
@@ -94,12 +94,15 @@
           <div><dt>Completed</dt><dd>{queue.completed}</dd></div>
           <div><dt>Failed</dt><dd>{queue.failed}</dd></div>
         </dl>
-        {#if !queue.hasWorker && queue.waiting > 0}
-          <p class="queue-warning">{queue.waiting} job{queue.waiting === 1 ? '' : 's'} waiting with nothing to run {queue.waiting === 1 ? 'it' : 'them'}.</p>
+        {#if !queue.hasWorker}
+          <p class="queue-warning">
+            No worker is draining this queue{queue.waiting ? `, and ${queue.waiting} job${queue.waiting === 1 ? ' is' : 's are'} waiting` : ''}.
+            {data.deployment.workerMode === 'inline' ? 'The web process should be running one — check its logs.' : 'Start `pnpm worker` on the machine that runs inference.'}
+          </p>
         {/if}
       </article>
-    {/each}
-  </div>
+    </div>
+  {/if}
 
   {#if message}<p class="form-error">{message}</p>{/if}
 
@@ -115,7 +118,7 @@
             <strong>{title(job)}</strong>
             <span>
               {job.status === 'queued' ? `Queued${job.queuePosition ? ` · position ${job.queuePosition}` : ''}` : 'Running'}
-              · {job.executionTarget === 'local' ? 'your machine' : 'cloud'}
+              · {job.mode}
               · started {when(job.startedAt)}
             </span>
           </div>
@@ -142,13 +145,13 @@
       <p class="jobs-empty">No finished jobs yet.</p>
     {/if}
     <table class="jobs-table">
-      <thead><tr><th>Job</th><th>Status</th><th>Where</th><th>Finished</th><th></th></tr></thead>
+      <thead><tr><th>Job</th><th>Status</th><th>Runtime</th><th>Finished</th><th></th></tr></thead>
       <tbody>
         {#each finished as job}
           <tr>
             <td>{title(job)}</td>
             <td><span class={`status-pill ${job.status}`}>{job.status}</span>{#if job.error}<small class="job-error">{job.error}</small>{/if}</td>
-            <td>{job.executionTarget === 'local' ? 'own machine' : 'cloud'}</td>
+            <td>{job.mode}</td>
             <td>{when(job.completedAt)}</td>
             <td><button class="text-button" onclick={() => remove(job)}>Remove</button></td>
           </tr>

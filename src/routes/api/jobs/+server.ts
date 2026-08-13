@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { jobsForUser, queueSnapshotsForUser } from '$lib/server/jobs';
+import { jobsForUser, queueHealth } from '$lib/server/jobs';
 import { requireUser } from '$lib/server/session';
 
 /**
@@ -10,9 +10,9 @@ import { requireUser } from '$lib/server/session';
 export const GET: RequestHandler = async ({ locals, url }) => {
   const user = requireUser(locals);
   const bookId = url.searchParams.get('bookId') ?? undefined;
-  const [jobs, queues] = await Promise.all([
+  const [jobs, queue] = await Promise.all([
     jobsForUser(user.id, { bookId, limit: Number(url.searchParams.get('limit') ?? 50) }),
-    queueSnapshotsForUser(user.id)
+    queueHealth()
   ]);
-  return json({ jobs, queues }, { headers: { 'cache-control': 'no-store' } });
+  return json({ jobs, queue }, { headers: { 'cache-control': 'no-store' } });
 };

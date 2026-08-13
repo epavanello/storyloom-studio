@@ -1,5 +1,5 @@
 {
-  "id": "d4bc10e9-b619-4892-84ef-de2ff088a128",
+  "id": "87b3594e-2548-4567-810f-cdeaee90ec07",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -375,18 +375,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'queued'"
-        },
-        "execution_target": {
-          "name": "execution_target",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "queue_name": {
-          "name": "queue_name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
         },
         "mode": {
           "name": "mode",
@@ -855,60 +843,6 @@
           ]
         }
       },
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.user_settings": {
-      "name": "user_settings",
-      "schema": "",
-      "columns": {
-        "user_id": {
-          "name": "user_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "execution": {
-          "name": "execution",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'cloud'"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "user_settings_user_id_user_id_fk": {
-          "name": "user_settings_user_id_user_id_fk",
-          "tableFrom": "user_settings",
-          "tableTo": "user",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false

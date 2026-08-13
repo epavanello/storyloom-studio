@@ -14,9 +14,9 @@ const PolicySchema = z.enum(['local-required', 'local-preferred', 'cloud-preferr
 const RuntimeModeSchema = z.enum(['mock', 'local', 'cloud', 'hybrid']);
 
 /**
- * `inline` runs a BullMQ worker inside the web process, which is what a single cheap
- * box or a purely cloud deployment wants. `external` means the queue is served by a
- * separate `pnpm worker` process. `off` disables job execution in this process.
+ * `inline` runs a BullMQ worker inside the web process, which is what a single-box
+ * deployment wants. `external` means the queue is drained by a separate `pnpm worker`
+ * process, possibly on another machine. `off` disables job execution in this process.
  */
 const WorkerModeSchema = z.enum(['inline', 'external', 'off']);
 
@@ -46,12 +46,6 @@ export const AppConfigSchema = z.object({
   worker: z.object({
     mode: WorkerModeSchema,
     concurrency: z.number().int().positive(),
-    /**
-     * Which queues this process consumes. `cloud` is the shared multi-tenant queue.
-     * `local:<userId>` is a single user's private queue, served by the machine that
-     * actually owns the inference runtimes.
-     */
-    queues: z.array(z.string()).min(1),
     lockDurationMs: z.number().int().positive(),
     stalledIntervalMs: z.number().int().positive()
   }),
@@ -128,8 +122,9 @@ export function getConfig(): AppConfig {
     },
     worker: {
       mode: env.STORYLOOM_WORKER_MODE ?? 'inline',
+      // Local inference loads one heavy model at a time, so a machine in local mode
+      // must not take a second job while the first is holding a runtime.
       concurrency: integer(env.STORYLOOM_WORKER_CONCURRENCY, mode === 'local' ? 1 : 2),
-      queues: list(env.STORYLOOM_WORKER_QUEUES, ['cloud']),
       lockDurationMs: integer(env.STORYLOOM_WORKER_LOCK_MS, 120_000),
       stalledIntervalMs: integer(env.STORYLOOM_WORKER_STALLED_MS, 60_000)
     },

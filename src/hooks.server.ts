@@ -22,9 +22,9 @@ startInlineWorker();
 
 /**
  * Runs the queue consumer inside the web process. This is the whole point of the
- * parametric worker: a cheap single-box deployment with cloud inference sets
- * `STORYLOOM_WORKER_MODE=inline`, while a deployment whose heavy work happens on
- * someone's Mac sets `external` and starts `pnpm worker` over there instead.
+ * parametric worker: a single-box deployment sets `STORYLOOM_WORKER_MODE=inline`, while
+ * a deployment whose heavy work happens on another machine sets `external` here and
+ * starts `pnpm worker` over there instead.
  */
 function startInlineWorker() {
   const stateKey = Symbol.for('storyloom.inline-worker');
@@ -40,13 +40,8 @@ function startInlineWorker() {
 
   void (async () => {
     try {
-      const [{ resolveQueueNames }, { startWorkers }] = await Promise.all([
-        import('$lib/server/queue/names'),
-        import('$lib/server/queue/worker')
-      ]);
-      const names = resolveQueueNames(config.worker.queues);
-      startWorkers(names);
-      console.log(`[web] inline worker draining ${names.join(', ')}`);
+      const { startWorker } = await import('$lib/server/queue/worker');
+      startWorker();
     } catch (cause) {
       // A web server that cannot start its worker still serves the library and the job
       // history; it just cannot execute new work, which the dashboard reports.

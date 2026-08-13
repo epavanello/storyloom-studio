@@ -94,8 +94,15 @@ Storyloom is a multi-account service. Books, chapters, renders, artifacts, jobs 
 - Authorize artifact reads against book ownership. Generated media is user data and must never be served from a public bucket URL.
 - An unauthorized request must be indistinguishable from a missing resource, so that identifiers cannot be probed.
 - Provider keys are per account, sealed at rest, decrypted only while that account's job runs, and never returned to the browser, written into an artifact, or logged.
-- A job may only be routed to a queue its owner controls. A per-user local queue must never receive another account's work.
-- Direct Redis and Postgres credentials imply full access to every account. Only give them to a process whose operator is entitled to that.
+- Direct database and Redis credentials imply full access to every account. Only give them to a process whose operator is entitled to that.
+
+### Keep the deployment shape simple
+
+A deployment is **either cloud or local**, decided by `STORYLOOM_MODE`, and every job on it runs that way. There is one queue.
+
+- Do not add per-account execution targets, per-user queues, or mixed cloud/local routing. Switching a deployment from local to cloud must remain a configuration change.
+- What is parametric is which process drains the queue: `STORYLOOM_WORKER_MODE` is `inline`, `external` or `off`.
+- Infrastructure that a deployment must be able to swap — the database and the object store — belongs behind a driver with one interface and one key space, so the same code serves a local file and a hosted service.
 
 ### Generate on demand
 
@@ -338,7 +345,7 @@ If the repository standardizes on another invocation later, update this section 
 - **Routing:** all execution policies, absent credentials, unsupported capabilities, explicit fallback behavior.
 - **Storage:** path traversal, interrupted writes where relevant, cache hit/miss, version invalidation, key round-trips across drivers.
 - **Tenancy:** a second account must not be able to read, queue against, cancel or delete the first account's books, artifacts and jobs.
-- **Queue:** routing per execution target, duplicate suppression, cancellation of queued and running work, and a queue with no worker being reported rather than silently stalling.
+- **Queue:** duplicate suppression, cancellation of queued and running work, and a queue with no worker being reported rather than silently stalling.
 - **Audio/timeline:** duration handling, exact versus approximate alignment, seeking, utterance boundaries.
 - **Images:** reference mapping, multi-character requirements, missing references, regeneration isolation.
 - **UI/API:** successful state, long-running state, partial failure, retry, cached result, accessible controls.
@@ -480,8 +487,9 @@ When a safe local mock or reversible implementation can proceed without resolvin
 - Considering compilation proof that local/cloud media generation works.
 - Building generalized infrastructure beyond the deployment the user asked for. The database, queue and object storage exist because a multi-account service with a detached worker requires them; that is not a licence to generalize further.
 - Scoping a query by an ID from the request without also scoping it by owner.
-- Polling a serverless database, or writing per-step progress to it.
-- Handing Redis or Postgres credentials to a machine whose operator may not read every account's data.
+- Polling the database, or writing per-step progress to it.
+- Handing database or Redis credentials to a machine whose operator may not read every account's data.
+- Reintroducing per-account execution routing because a single deployment mode felt limiting.
 
 ## Current strategic next step
 

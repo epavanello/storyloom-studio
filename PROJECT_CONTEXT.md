@@ -132,7 +132,7 @@ Il libro viene analizzato quanto basta per costruire struttura e registri, ma au
 
 Ogni capacità può essere locale, cloud o ibrida, purché il passaggio al cloud sia esplicito, registrato e compatibile con la policy di privacy del libro.
 
-Dopo l'estensione di perimetro descritta più sotto, «local-first» non significa più che tutto risiede sul Mac: significa che ogni utente può scegliere di far girare l'inferenza sulla propria macchina, e in quel caso il testo del libro non raggiunge nessun provider cloud. Lo stato condiviso (registri, piani, job) e gli artifact vivono comunque nel database e nell'object storage del deploy, perché è ciò che permette a interfaccia e calcolo di stare su macchine diverse.
+Dopo l'estensione di perimetro descritta più sotto, «local-first» non significa più che tutto risiede necessariamente sul Mac: significa che un deploy può essere configurato perché l'inferenza giri su una macchina propria, e in quel caso il testo del libro non raggiunge nessun provider cloud. Lo stato condiviso (registri, piani, job) e gli artifact vivono nel database e nell'object storage del deploy: entrambi stanno dietro un driver, così la stessa base di codice serve un file locale su un Mac e un servizio gestito quando interfaccia e calcolo devono stare su macchine diverse.
 
 Locale e cloud devono condividere i contratti funzionali, non necessariamente gli stessi modelli o pesi. Il routing deve scegliere provider che soddisfano i requisiti qualitativi; non deve degradare silenziosamente verso un provider che ignora reference, timestamp o altri vincoli obbligatori.
 
@@ -176,7 +176,7 @@ Il perimetro iniziale escludeva esplicitamente multiutenza, database e infrastru
 Ne discendono quattro elementi strutturali:
 
 - **Postgres** come stato condiviso fra web tier e worker. Nulla lo interroga a intervalli: il progresso vivo dei job sta in Redis e il database vede solo le transizioni durevoli, così un Postgres serverless resta sospeso quando non si genera nulla.
-- **Redis con BullMQ** come coda. Un job va sulla coda cloud condivisa oppure sulla coda privata di un utente, che solo la macchina di quell'utente drena.
+- **Redis con BullMQ** come coda, una sola. Un deploy è cloud **oppure** locale, mai entrambi: `STORYLOOM_MODE` lo decide e ogni job di quel deploy gira così. Ciò che è parametrico è quale processo drena la coda — dentro il processo web, un processo separato sulla stessa macchina, o un processo su un'altra macchina.
 - **Object storage S3-compatibile** per audio, immagini e schede identità, con lettura autorizzata contro la proprietà del libro.
 - **Sessioni e segregazione per utente**, con chiavi provider portate dall'utente e cifrate a riposo.
 
@@ -191,7 +191,8 @@ Ne discendono quattro elementi strutturali:
 - editing audio professionale completo;
 - orchestratore universale capace di eseguire workflow arbitrari;
 - equivalenza esatta tra i modelli locali e quelli cloud;
-- runner di terze parti non fidati: oggi un worker ha credenziali dirette a Redis e Postgres, quindi può essere affidato solo a chi è legittimato a vedere i dati di tutti gli account.
+- esecuzione scelta per singolo account: dove gira un job è una proprietà del deploy, non dell'utente;
+- runner di terze parti non fidati: un worker ha credenziali dirette al database e a Redis, quindi può essere affidato solo a chi è legittimato a vedere i dati di tutti gli account.
 
 L'estensione di perimetro non cambia le priorità qualitative: la verticale creativa resta il criterio di successo, e l'infrastruttura esiste per renderla distribuibile, non per sostituirla.
 

@@ -59,20 +59,6 @@ export const verification = pgTable('verification', {
 // ---------------------------------------------------------------------------
 
 /**
- * Where a user's heavy jobs run. `cloud` uses the shared multi-tenant queue with the
- * user's own OpenRouter key; `local` parks the job on a private queue that only that
- * user's own machine drains.
- */
-export const executionTargets = ['cloud', 'local'] as const;
-
-export const userSettings = pgTable('user_settings', {
-  userId: text('user_id').primaryKey().references(() => user.id, { onDelete: 'cascade' }),
-  execution: text('execution', { enum: executionTargets }).notNull().default('cloud'),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
-});
-
-/**
  * Bring-your-own-key material. Only the ciphertext lives here: the plaintext key is
  * recovered with STORYLOOM_ENCRYPTION_KEY at job execution time and is never sent to
  * the browser, logged, or embedded in an artifact.
@@ -135,8 +121,7 @@ export const jobs = pgTable('jobs', {
   chapterId: text('chapter_id'),
   kind: text('kind', { enum: ['registry', 'chapter'] }).notNull(),
   status: text('status', { enum: jobStatuses }).notNull().default('queued'),
-  executionTarget: text('execution_target', { enum: executionTargets }).notNull(),
-  queueName: text('queue_name').notNull(),
+  /** The deployment's runtime profile when the job was accepted, kept for provenance. */
   mode: text('mode', { enum: ['mock', 'local', 'cloud', 'hybrid'] }).notNull(),
   attempts: integer('attempts').notNull().default(0),
   steps: jsonb('steps').$type<GenerationJobStep[]>().notNull().default(sql`'[]'::jsonb`),
@@ -170,7 +155,6 @@ export const schema = {
   session,
   account,
   verification,
-  userSettings,
   providerCredentials,
   books,
   chapters,

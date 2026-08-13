@@ -5,7 +5,7 @@ import { finalize, JobCancelledError, markJobActive, reportJobProgress } from '.
 import { prepareChapter, prepareRegistry } from '../orchestrator';
 import { getRedis } from './connection';
 import { isCancellationRequested } from './live';
-import { queuePrefix, type JobPayload } from './queues';
+import { JOBS_QUEUE, queuePrefix, type JobPayload } from './queues';
 
 /**
  * Runs one queued generation job to completion.
@@ -41,31 +41,24 @@ async function execute(job: Job<JobPayload>) {
   }
 }
 
-export type RunningWorkers = { workers: Worker<JobPayload>[]; stop: () => Promise<void> };
+export type RunningWorker = { worker: Worker<JobPayload>; stop: () => Promise<void> };
 
-export function startWorkers(queueNames: string[]): RunningWorkers {
+/** Attaches a consumer to the deployment's queue. */
+export function startWorker(): RunningWorker {
   const config = getConfig();
-  const workers = queueNames.map((name) => {
-    const worker = new Worker<JobPayload>(name, execute, {
-      connection: getRedis(),
-      prefix: queuePrefix(),
-      concurrency: config.worker.concurrency,
-      // A chapter render holds the lock for minutes at a time while a model runs, so the
-      // lock has to outlive a single heavy step rather than the default 30 seconds.
-      lockDuration: config.worker.lockDurationMs,
-      stalledInterval: config.worker.stalledIntervalMs,
-      maxStalledCount: 1
-    });
-    worker.on('failed', (job, error) => console.error(`[worker:${name}] job ${job?.id ?? 'unknown'} failed:`, error.message));
-    worker.on('error', (error) => console.error(`[worker:${name}]`, error.message));
-    worker.on('ready', () => console.log(`[worker:${name}] listening (concurrency ${config.worker.concurrency})`));
-    return worker;
+  const worker = new Worker<JobPayload>(JOBS_QUEUE, execute, {
+    connection: getRedis(),
+    prefix: queuePrefix(),
+    concurrency: config.worker.concurrency,
+    // A chapter render holds the lock for minutes at a time while a model runs, so the
+    // lock has to outlive a single heavy step rather than the default 30 seconds.
+    lockDuration: config.worker.lockDurationMs,
+    stalledInterval: config.worker.stalledIntervalMs,
+    maxStalledCount: 1
   });
+  worker.on('failed', (job, error) => console.error(`[worker] job ${job?.id ?? 'unknown'} failed:`, error.message));
+  worker.on('error', (error) => console.error('[worker]', error.message));
+  worker.on('ready', () => console.log(`[worker] listening on ${JOBS_QUEUE} (mode ${config.mode}, concurrency ${config.worker.concurrency})`));
 
-  return {
-    workers,
-    stop: async () => {
-      await Promise.all(workers.map((worker) => worker.close()));
-    }
-  };
+  return { worker, stop: () => worker.close() };
 }

@@ -20,8 +20,6 @@ describe('generation job', () => {
     chapterId: 'chapter-1',
     userId: 'user-1',
     mode: 'local',
-    executionTarget: 'local',
-    queueName: 'storyloom-local-user-1',
     status: 'queued',
     queuePosition: 2,
     createdAt: '2026-01-01T00:00:00.000Z',
@@ -33,7 +31,7 @@ describe('generation job', () => {
     const job = GenerationJobSchema.parse(base);
     expect(job.queuePosition).toBe(2);
     expect(job.userId).toBe('user-1');
-    expect(job.executionTarget).toBe('local');
+    expect(job.mode).toBe('local');
     expect(job.steps[0]).toMatchObject({ completed: 3, total: 7 });
     expect(job.startedAt).toBeNull();
     expect(job.error).toBeNull();

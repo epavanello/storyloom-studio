@@ -138,7 +138,6 @@ export const GenerationJobStepSchema = z.object({
 });
 
 export const JobStatusSchema = z.enum(['queued', 'active', 'completed', 'failed', 'cancelled']);
-export const ExecutionTargetSchema = z.enum(['cloud', 'local']);
 
 export const GenerationJobSchema = z.object({
   schemaVersion: z.literal(1),
@@ -147,12 +146,10 @@ export const GenerationJobSchema = z.object({
   bookId: z.string(),
   chapterId: z.string().nullable().default(null),
   userId: z.string(),
+  /** The runtime profile of the deployment that accepted the job. */
   mode: z.enum(['mock', 'local', 'cloud', 'hybrid']),
-  /** Whether this job is served by the shared cloud queue or by the owner's own machine. */
-  executionTarget: ExecutionTargetSchema,
-  queueName: z.string(),
   status: JobStatusSchema,
-  /** Position among the jobs still waiting on the same queue, 1-based. */
+  /** Position among the jobs still waiting, 1-based. */
   queuePosition: z.number().int().positive().nullable().default(null),
   attempts: z.number().int().nonnegative().default(0),
   createdAt: z.string(),
@@ -166,7 +163,6 @@ export const GenerationJobSchema = z.object({
 /** Aggregate queue health, read from Redis so it costs no database compute. */
 export const QueueSnapshotSchema = z.object({
   name: z.string(),
-  target: ExecutionTargetSchema,
   waiting: z.number().int().nonnegative(),
   active: z.number().int().nonnegative(),
   delayed: z.number().int().nonnegative(),
@@ -186,5 +182,4 @@ export type VoiceProfile = z.infer<typeof VoiceProfileSchema>;
 export type GenerationJob = z.infer<typeof GenerationJobSchema>;
 export type GenerationJobStep = z.infer<typeof GenerationJobStepSchema>;
 export type JobStatus = z.infer<typeof JobStatusSchema>;
-export type ExecutionTarget = z.infer<typeof ExecutionTargetSchema>;
 export type QueueSnapshot = z.infer<typeof QueueSnapshotSchema>;
