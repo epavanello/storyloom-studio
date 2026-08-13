@@ -44,11 +44,12 @@ CANDIDATES = (
         role="narrator",
         seed=1407,
         prompt=(
-            "A native Italian woman in her early forties with a warm, refined, "
-            "natural contralto voice. Literary audiobook narrator, intimate and "
-            "authoritative without sounding theatrical, synthetic, breathy, or "
-            "like a digital assistant. Neutral Italian diction, measured pace, "
-            "subtle emotional depth, close studio microphone."
+            "Voce di una donna italiana madrelingua, cresciuta e residente in Italia, "
+            "di circa quarant'anni. Contralto caldo, raffinato e naturale da narratrice "
+            "di audiolibri letterari. Pronuncia italiana standard autentica: vocali "
+            "italiane pure, consonanti nitide, erre italiana e nessuna cadenza inglese "
+            "o americana. Intima e autorevole senza teatralità, tono da assistente "
+            "digitale o inflessioni promozionali. Ritmo misurato ed emozione sottile."
         ),
     ),
     Candidate(

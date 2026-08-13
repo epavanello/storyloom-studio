@@ -9,7 +9,9 @@ export const GET: RequestHandler = async ({ params, url }) => {
   return new Response(audio, {
     headers: {
       'content-type': 'audio/wav',
-      'cache-control': 'private, max-age=3600'
+      // Voice Lab files are deliberately replaceable casting artifacts. Do not
+      // let a regenerated reference appear unchanged because of browser cache.
+      'cache-control': 'private, no-store'
     }
   });
 };

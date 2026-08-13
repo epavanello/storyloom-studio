@@ -22,10 +22,13 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--catalog", type=Path, required=True)
     parser.add_argument("--base-url", default="http://127.0.0.1:7861/v1")
+    parser.add_argument("--only", action="append")
     args = parser.parse_args()
 
     payload = json.loads(args.catalog.read_text(encoding="utf-8"))
     for candidate in payload["candidates"]:
+        if args.only and candidate["id"] not in args.only:
+            continue
         text = NARRATOR_TEXT if candidate["role"] == "narrator" else CHARACTER_TEXT
         body = json.dumps({
             "model": "chatterbox-multilingual-v3",
