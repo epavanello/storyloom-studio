@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import type { ChapterPlan, Character } from '$lib/core/schemas';
-import { ChapterPlanSchema } from '$lib/core/schemas';
+import type { ArtifactRef, ChapterPlan, Character } from '../../core/schemas';
+import { ChapterPlanSchema } from '../../core/schemas';
 import { saveArtifact, safePart } from '../store';
 import type { AlignmentProvider, ImageProvider, ImageRequest, SpeechProvider, SpeechRequest, StructuredRequest, StructuredTextProvider } from './contracts';
 
@@ -175,7 +175,7 @@ export class MockSpeechProvider implements SpeechProvider {
 
 export class ProportionalAligner implements AlignmentProvider {
   id = 'proportional';
-  async align(_audioPath: string, text: string, durationMs: number) {
+  async align(_audio: ArtifactRef, text: string, durationMs: number) {
     const words = text.match(/\S+/g) ?? [];
     const weights = words.map((word) => Math.max(1, word.replace(/[^\p{L}\p{N}]/gu, '').length));
     const total = weights.reduce((sum, value) => sum + value, 0) || 1;

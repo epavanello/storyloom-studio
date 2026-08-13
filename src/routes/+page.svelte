@@ -1,5 +1,7 @@
 <script lang="ts">
   import { enhance } from '$app/forms';
+  import { goto } from '$app/navigation';
+  import { signOut } from '$lib/auth-client';
   let { data, form } = $props();
   let uploading = $state(false);
 </script>
@@ -12,7 +14,12 @@
 <main class="landing-shell">
   <header class="brand-bar">
     <a class="brand" href="/" aria-label="Storyloom home"><span class="brand-mark">S</span><span>Storyloom</span></a>
-    <span class="local-pill"><i></i> Local-first studio</span>
+    <nav class="account-nav">
+      <a href="/jobs">Jobs</a>
+      <a href="/settings">Settings</a>
+      {#if data.user}<span class="account-email">{data.user.email}</span>{/if}
+      <button class="text-button" onclick={() => signOut().then(() => goto('/auth/sign-in'))}>Sign out</button>
+    </nav>
   </header>
 
   <section class="hero-grid">
@@ -46,8 +53,8 @@
       <div class="book-grid">
         {#each data.books as book, index}
           <a class="book-card" href={`/books/${book.id}`}>
-            <div class="mini-cover cover-{index % 4}"><span>{book.title.slice(0, 1)}</span><small>{book.chapters.length} CHAPTERS</small></div>
-            <div><strong>{book.title}</strong><span>{book.registryStatus === 'ready' ? `${book.characters.length} characters ready` : 'Ready to prepare'}</span></div>
+            <div class="mini-cover cover-{index % 4}"><span>{book.title.slice(0, 1)}</span><small>{book.chapterCount} CHAPTERS</small></div>
+            <div><strong>{book.title}</strong><span>{book.registryStatus === 'ready' ? `${book.characterCount} characters ready` : 'Ready to prepare'}</span></div>
             <b>→</b>
           </a>
         {/each}

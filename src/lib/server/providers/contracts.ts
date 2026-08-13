@@ -1,5 +1,5 @@
 import type { z } from 'zod';
-import type { ArtifactRef, Character, VoiceProfile } from '$lib/core/schemas';
+import type { ArtifactRef, Character, VoiceProfile } from '../../core/schemas';
 
 export type StructuredRequest<T> = {
   system: string;
@@ -49,5 +49,9 @@ export interface ImageProvider {
 
 export interface AlignmentProvider {
   id: string;
-  align(audioPath: string, text: string, durationMs: number): Promise<{ words: { text: string; startMs: number; endMs: number }[]; quality: 'exact' | 'approximate' }>;
+  /**
+   * Takes the artifact reference rather than a URL: the bytes are fetched through the
+   * storage layer by key, so alignment works the same on a local disk and on R2.
+   */
+  align(audio: ArtifactRef, text: string, durationMs: number): Promise<{ words: { text: string; startMs: number; endMs: number }[]; quality: 'exact' | 'approximate' }>;
 }

@@ -1,4 +1,5 @@
 import { getConfig } from '../config';
+import type { RunContext } from '../context';
 import { AiSdkStructuredProvider, OpenRouterStructuredProvider } from './text';
 import { MockImageProvider, MockSpeechProvider, MockStructuredProvider, ProportionalAligner } from './mock';
 import { OpenAiCompatibleImageProvider, OpenAiCompatibleSpeechProvider, OpenRouterImageProvider, OpenRouterSpeechProvider } from './media';
@@ -26,15 +27,21 @@ class FallbackImageProvider implements ImageProvider {
 class FallbackAlignmentProvider implements AlignmentProvider {
   id: string;
   constructor(private primary: AlignmentProvider, private fallback: AlignmentProvider) { this.id = `${primary.id}->${fallback.id}`; }
-  async align(audioPath: string, text: string, durationMs: number) { try { return await this.primary.align(audioPath, text, durationMs); } catch { return this.fallback.align(audioPath, text, durationMs); } }
+  async align(...args: Parameters<AlignmentProvider['align']>) { try { return await this.primary.align(...args); } catch { return this.fallback.align(...args); } }
 }
 
-export function providers() {
+/**
+ * Selects a provider per capability for one user's run. Cloud credentials come from the
+ * run context — in a multi-tenant deployment the key belongs to the requesting account,
+ * never to the process.
+ */
+export function providers(context: RunContext) {
   const config = getConfig();
-  if (config.mode === 'mock') return {
+  if (context.mode === 'mock') return {
     text: new MockStructuredProvider(), image: new MockImageProvider(), speech: new MockSpeechProvider(), aligner: new ProportionalAligner()
   };
 
+  const cloudKey = context.credentials.openRouterApiKey;
   const localText = new AiSdkStructuredProvider({
     id: 'lm-studio',
     baseURL: config.localLlmBaseUrl,
@@ -42,24 +49,24 @@ export function providers() {
     model: config.localLlmModel,
     reasoningEffort: 'none'
   });
-  const cloudText = new OpenRouterStructuredProvider(config.openRouterLlmModel, config.openRouterApiKey);
+  const cloudText = new OpenRouterStructuredProvider(config.openRouterLlmModel, cloudKey);
   const localSpeech = new OpenAiCompatibleSpeechProvider('local-tts', config.localTtsModel, config.localTtsBaseUrl, '', 'wav');
-  const cloudSpeech = new OpenRouterSpeechProvider(config.openRouterTtsModel, config.openRouterApiKey, config.openRouterTtsVoices);
+  const cloudSpeech = new OpenRouterSpeechProvider(config.openRouterTtsModel, cloudKey, config.openRouterTtsVoices);
   const localImage = new OpenAiCompatibleImageProvider('local-image', config.localImageModel, config.localImageBaseUrl, '');
-  const cloudImage = new OpenRouterImageProvider(config.openRouterImageModel, config.openRouterApiKey);
+  const cloudImage = new OpenRouterImageProvider(config.openRouterImageModel, cloudKey);
   const localAligner = config.localAlignerBaseUrl ? new QwenForcedAlignerProvider(config.localAlignerBaseUrl) : new ProportionalAligner();
   const cloudAligner = new ProportionalAligner();
 
   const choose = <T>(policy: string, local: T, cloud: T, fallback: (primary: T, secondary: T) => T): T => {
-    if (config.mode === 'local' || policy === 'local-required') return local;
-    if (config.mode === 'cloud' || policy === 'cloud-only') return cloud;
-    if (!config.openRouterApiKey) return local;
+    if (context.mode === 'local' || policy === 'local-required') return local;
+    if (context.mode === 'cloud' || policy === 'cloud-only') return cloud;
+    if (!cloudKey) return local;
     return policy === 'cloud-preferred' ? fallback(cloud, local) : fallback(local, cloud);
   };
   return {
-    text: choose<StructuredTextProvider>(config.policies.text, localText, cloudText, (a, b) => new FallbackTextProvider(a, b)),
-    speech: choose<SpeechProvider>(config.policies.tts, localSpeech, cloudSpeech, (a, b) => new FallbackSpeechProvider(a, b)),
-    image: choose<ImageProvider>(config.policies.image, localImage, cloudImage, (a, b) => new FallbackImageProvider(a, b)),
-    aligner: choose<AlignmentProvider>(config.policies.alignment, localAligner, cloudAligner, (a, b) => new FallbackAlignmentProvider(a, b))
+    text: choose<StructuredTextProvider>(context.policies.text, localText, cloudText, (a, b) => new FallbackTextProvider(a, b)),
+    speech: choose<SpeechProvider>(context.policies.tts, localSpeech, cloudSpeech, (a, b) => new FallbackSpeechProvider(a, b)),
+    image: choose<ImageProvider>(context.policies.image, localImage, cloudImage, (a, b) => new FallbackImageProvider(a, b)),
+    aligner: choose<AlignmentProvider>(context.policies.alignment, localAligner, cloudAligner, (a, b) => new FallbackAlignmentProvider(a, b))
   };
 }

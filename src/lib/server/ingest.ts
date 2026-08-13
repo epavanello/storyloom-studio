@@ -2,7 +2,7 @@ import JSZip from 'jszip';
 import { XMLParser } from 'fast-xml-parser';
 import { load as loadHtml } from 'cheerio';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
-import type { Chapter } from '$lib/core/schemas';
+import type { Chapter } from '../core/schemas';
 import { safePart } from './store';
 
 type ParsedBook = { title: string; chapters: Chapter[] };

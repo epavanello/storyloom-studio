@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { parseFile } from 'music-metadata';
+import { parseBuffer } from 'music-metadata';
 import { z } from 'zod';
-import { BookManifestSchema, ChapterPlanSchema, CharacterSchema, type BookManifest, type Character, type RenderedChapter, type VoiceProfile } from '$lib/core/schemas';
-import { locateChapterPlanText, validateChapterPlan } from '$lib/core/plan';
+import { BookManifestSchema, ChapterPlanSchema, CharacterSchema, type BookManifest, type Character, type RenderedChapter, type VoiceProfile } from '../core/schemas';
+import { locateChapterPlanText, validateChapterPlan } from '../core/plan';
+import { describeMissingCredentials, type RunContext } from './context';
 import { parseBook } from './ingest';
-import { bookDir, getManifest, getRenderedChapter, saveManifest, saveRenderedChapter, safePart } from './store';
+import { createBook, getManifest, getRenderedChapter, readArtifact, saveBookRegistry, saveRenderedChapter, safePart } from './store';
 import { providers } from './providers/router';
 import { withLocalRuntime } from './runtime';
 
@@ -54,7 +55,7 @@ function voiceFor(characterId: string | null, manifest: BookManifest): VoiceProf
   };
 }
 
-export async function ingestBook(fileName: string, bytes: Uint8Array) {
+export async function ingestBook(userId: string, fileName: string, bytes: Uint8Array) {
   const parsed = await parseBook(fileName, bytes);
   if (!parsed.chapters.length) throw new Error('No readable chapters were found');
   const id = `${safePart(parsed.title).slice(0, 38)}-${randomUUID().slice(0, 7)}`;
@@ -62,15 +63,18 @@ export async function ingestBook(fileName: string, bytes: Uint8Array) {
     schemaVersion: 1, id, title: parsed.title, sourceName: fileName,
     createdAt: new Date().toISOString(), chapters: parsed.chapters, characters: [], voices: [], registryStatus: 'pending'
   });
-  await saveManifest(manifest);
+  await createBook(userId, manifest);
   return manifest;
 }
 
-export async function prepareRegistry(bookId: string, onProgress: ProgressReporter = noProgress) {
-  const manifest = await getManifest(bookId);
+export async function prepareRegistry(context: RunContext, onProgress: ProgressReporter = noProgress) {
+  const blocker = describeMissingCredentials(context);
+  if (blocker) throw new Error(blocker);
+  const { bookId } = context;
+  const manifest = await getManifest(context.userId, bookId);
   manifest.registryStatus = 'processing';
-  await saveManifest(manifest);
-  const service = providers();
+  await saveBookRegistry(bookId, { registryStatus: 'processing' });
+  const service = providers(context);
   try {
     await onProgress({ stepId: 'registry-analysis', status: 'running', completed: 0, total: manifest.chapters.length, detail: 'Reading the first chapter' });
     const registry = await withLocalRuntime('text', async () => {
@@ -85,7 +89,9 @@ export async function prepareRegistry(bookId: string, onProgress: ProgressReport
         });
         current = mergeCharacters(current, patch.characters.map((character) => ({ ...character, id: safePart(character.id || character.canonicalName) })));
         manifest.characters = current;
-        await saveManifest(manifest);
+        // Persisted after every chapter so an interrupted registry pass resumes from the
+        // identities it already established instead of re-reading the whole book.
+        await saveBookRegistry(bookId, { characters: current });
         await onProgress({ stepId: 'registry-analysis', completed: index + 1, total: manifest.chapters.length, detail: `Read ${index + 1} of ${manifest.chapters.length} chapters` });
       }
       return current;
@@ -107,23 +113,26 @@ export async function prepareRegistry(bookId: string, onProgress: ProgressReport
     manifest.characters = registry;
     manifest.voices = registry.map((character) => voiceFor(character.id, manifest));
     manifest.registryStatus = 'ready';
-    await saveManifest(manifest);
+    await saveBookRegistry(bookId, { characters: manifest.characters, voices: manifest.voices, registryStatus: 'ready' });
     return manifest;
   } catch (error) {
     manifest.registryStatus = 'failed';
-    await saveManifest(manifest);
+    await saveBookRegistry(bookId, { registryStatus: 'failed' });
     throw error;
   }
 }
 
-export async function prepareChapter(bookId: string, chapterId: string, onProgress: ProgressReporter = noProgress) {
+export async function prepareChapter(context: RunContext, chapterId: string, onProgress: ProgressReporter = noProgress) {
+  const blocker = describeMissingCredentials(context);
+  if (blocker) throw new Error(blocker);
+  const { bookId } = context;
   const cached = await getRenderedChapter(bookId, chapterId);
   if (cached) return cached;
-  let manifest = await getManifest(bookId);
+  let manifest = await getManifest(context.userId, bookId);
   if (manifest.registryStatus !== 'ready') {
     await onProgress({ stepId: 'registry', status: 'running', completed: 0, total: 1, detail: 'Preparing character identities first' });
     const chapterCount = manifest.chapters.length;
-    manifest = await prepareRegistry(bookId, async (update) => {
+    manifest = await prepareRegistry(context, async (update) => {
       const isReferences = update.stepId === 'registry-references';
       await onProgress({
         stepId: 'registry',
@@ -137,7 +146,7 @@ export async function prepareChapter(bookId: string, chapterId: string, onProgre
   await onProgress({ stepId: 'registry', status: 'completed', completed: 1, total: 1, detail: 'Character registry ready' });
   const chapter = manifest.chapters.find((candidate) => candidate.id === chapterId);
   if (!chapter) throw new Error('Chapter not found');
-  const service = providers();
+  const service = providers(context);
   await onProgress({ stepId: 'plan', status: 'running', completed: 0, total: 1, detail: 'Directing the complete chapter' });
   let plan: z.infer<typeof ChapterPlanSchema> | undefined;
   let rejectedPlan: z.infer<typeof ChapterPlanSchema> | undefined;
@@ -183,10 +192,11 @@ export async function prepareChapter(bookId: string, chapterId: string, onProgre
         bookId, artifactName: `${chapter.id}-${utterance.id}`, text: utterance.text, voice,
         emotion: utterance.direction.emotion, intensity: utterance.direction.intensity, pace: utterance.direction.pace
       });
+      // The real audio duration drives the timeline; the word-count estimate is only a
+      // fallback for a container the metadata parser cannot read.
       let durationMs = Math.max(800, utterance.text.split(/\s+/).length / 2.45 * 1000);
       try {
-        const relative = decodeURIComponent(audio.path.split(`/api/artifacts/${encodeURIComponent(bookId)}/`)[1]);
-        const metadata = await parseFile(`${bookDir(bookId)}/artifacts/${relative}`);
+        const metadata = await parseBuffer(await readArtifact(audio), { mimeType: audio.mimeType });
         if (metadata.format.duration) durationMs = metadata.format.duration * 1000;
       } catch { /* use estimate */ }
       audioUtterances.push({ utterance, audio, durationMs });
@@ -200,7 +210,7 @@ export async function prepareChapter(bookId: string, chapterId: string, onProgre
   await onProgress({ stepId: 'alignment', status: 'running', completed: 0, total: audioUtterances.length, detail: 'Synchronizing the first passage' });
   await withLocalRuntime('alignment', async () => {
     for (const [index, item] of audioUtterances.entries()) {
-      const alignment = await service.aligner.align(item.audio.path, item.utterance.text, item.durationMs);
+      const alignment = await service.aligner.align(item.audio, item.utterance.text, item.durationMs);
       renderedUtterances.push({ utterance: item.utterance, audio: item.audio, startMs: timelineMs, durationMs: item.durationMs, words: alignment.words, alignment: alignment.quality });
       timelineMs += item.durationMs + item.utterance.direction.pauseAfterMs;
       await onProgress({ stepId: 'alignment', completed: index + 1, total: audioUtterances.length, detail: `Synchronized ${index + 1} of ${audioUtterances.length} passages` });

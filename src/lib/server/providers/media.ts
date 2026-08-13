@@ -1,6 +1,5 @@
-import { readFile } from 'node:fs/promises';
-import { resolveArtifact, saveArtifact, safePart } from '../store';
-import type { ArtifactRef } from '$lib/core/schemas';
+import { readArtifact, saveArtifact, safePart } from '../store';
+import type { ArtifactRef, Character } from '../../core/schemas';
 import type { ImageProvider, ImageRequest, SpeechProvider, SpeechRequest } from './contracts';
 
 function authHeaders(apiKey: string): Record<string, string> {
@@ -11,6 +10,23 @@ async function fetchChecked(url: string, init: RequestInit) {
   const response = await fetch(url, init);
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}: ${(await response.text()).slice(0, 500)}`);
   return response;
+}
+
+/**
+ * Loads the approved identity sheets for the characters actually present in a scene.
+ * A reference that cannot be read is dropped rather than silently replaced, so the
+ * caller still knows which identities were conditioned on.
+ */
+async function loadReferences(characters: Character[], perCharacter: number, limit = Number.POSITIVE_INFINITY) {
+  const refs = characters.flatMap((character) => character.referenceImages.slice(0, perCharacter)).slice(0, limit);
+  const loaded = await Promise.all(refs.map(async (reference) => {
+    try {
+      return { bytes: await readArtifact(reference), mimeType: reference.mimeType };
+    } catch {
+      return null;
+    }
+  }));
+  return loaded.filter((item): item is NonNullable<typeof item> => item !== null);
 }
 
 export class OpenAiCompatibleSpeechProvider implements SpeechProvider {
@@ -70,19 +86,7 @@ export class OpenAiCompatibleImageProvider implements ImageProvider {
   constructor(readonly id: string, readonly model: string, private readonly baseUrl: string, private readonly apiKey: string) {}
 
   async generate(request: ImageRequest): Promise<ArtifactRef> {
-    const references = await Promise.all(request.characters.flatMap((character) => character.referenceImages.slice(0, 2)).slice(0, 4).map(async (reference) => {
-      const match = reference.path.match(/^\/api\/artifacts\/([^/]+)\/(.+)$/);
-      if (!match) return null;
-      try {
-        const relativePath = match[2].split('/').map(decodeURIComponent).join('/');
-        return {
-          bytes: await readFile(resolveArtifact(decodeURIComponent(match[1]), relativePath)),
-          mimeType: reference.mimeType
-        };
-      } catch {
-        return null;
-      }
-    })).then((items) => items.filter((item): item is NonNullable<typeof item> => item !== null));
+    const references = await loadReferences(request.characters, 2, 4);
     const root = this.baseUrl.replace(/\/$/, '');
     const response = references.length
       ? await (() => {
@@ -120,17 +124,10 @@ export class OpenRouterImageProvider implements ImageProvider {
   constructor(readonly model: string, private readonly apiKey: string) {}
 
   async generate(request: ImageRequest): Promise<ArtifactRef> {
-    const inputReferences = await Promise.all(request.characters.flatMap((character) => character.referenceImages.slice(0, 2)).map(async (reference) => {
-      const match = reference.path.match(/^\/api\/artifacts\/([^/]+)\/(.+)$/);
-      if (!match) return null;
-      try {
-        const relativePath = match[2].split('/').map(decodeURIComponent).join('/');
-        const bytes = await readFile(resolveArtifact(decodeURIComponent(match[1]), relativePath));
-        return { type: 'image_url', image_url: { url: `data:${reference.mimeType};base64,${bytes.toString('base64')}` } };
-      } catch {
-        return null;
-      }
-    })).then((items) => items.filter((item): item is NonNullable<typeof item> => item !== null));
+    const inputReferences = (await loadReferences(request.characters, 2)).map((reference) => ({
+      type: 'image_url',
+      image_url: { url: `data:${reference.mimeType};base64,${Buffer.from(reference.bytes).toString('base64')}` }
+    }));
     let lastError: unknown;
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       try {

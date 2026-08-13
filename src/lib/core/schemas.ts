@@ -1,6 +1,13 @@
 import { z } from 'zod';
 
 export const ArtifactRefSchema = z.object({
+  /**
+   * Object-storage key, stable across storage drivers and deployments. It is the only
+   * durable handle to the bytes: server code reads artifacts through the storage layer
+   * with this key and never by parsing `path`.
+   */
+  key: z.string(),
+  /** Access-controlled application URL used by the browser. Derived from `key`. */
   path: z.string(),
   mimeType: z.string(),
   provider: z.string(),
@@ -130,21 +137,43 @@ export const GenerationJobStepSchema = z.object({
   detail: z.string().optional()
 });
 
+export const JobStatusSchema = z.enum(['queued', 'active', 'completed', 'failed', 'cancelled']);
+export const ExecutionTargetSchema = z.enum(['cloud', 'local']);
+
 export const GenerationJobSchema = z.object({
   schemaVersion: z.literal(1),
   id: z.string(),
   kind: z.enum(['registry', 'chapter']),
   bookId: z.string(),
-  chapterId: z.string().optional(),
+  chapterId: z.string().nullable().default(null),
+  userId: z.string(),
   mode: z.enum(['mock', 'local', 'cloud', 'hybrid']),
-  status: z.enum(['queued', 'running', 'completed', 'failed']),
-  queuePosition: z.number().int().positive().nullable(),
+  /** Whether this job is served by the shared cloud queue or by the owner's own machine. */
+  executionTarget: ExecutionTargetSchema,
+  queueName: z.string(),
+  status: JobStatusSchema,
+  /** Position among the jobs still waiting on the same queue, 1-based. */
+  queuePosition: z.number().int().positive().nullable().default(null),
+  attempts: z.number().int().nonnegative().default(0),
   createdAt: z.string(),
   updatedAt: z.string(),
-  startedAt: z.string().optional(),
-  completedAt: z.string().optional(),
-  error: z.string().optional(),
+  startedAt: z.string().nullable().default(null),
+  completedAt: z.string().nullable().default(null),
+  error: z.string().nullable().default(null),
   steps: z.array(GenerationJobStepSchema)
+});
+
+/** Aggregate queue health, read from Redis so it costs no database compute. */
+export const QueueSnapshotSchema = z.object({
+  name: z.string(),
+  target: ExecutionTargetSchema,
+  waiting: z.number().int().nonnegative(),
+  active: z.number().int().nonnegative(),
+  delayed: z.number().int().nonnegative(),
+  completed: z.number().int().nonnegative(),
+  failed: z.number().int().nonnegative(),
+  /** False when no worker has been seen on this queue, i.e. work would sit forever. */
+  hasWorker: z.boolean()
 });
 
 export type ArtifactRef = z.infer<typeof ArtifactRefSchema>;
@@ -156,3 +185,6 @@ export type RenderedChapter = z.infer<typeof RenderedChapterSchema>;
 export type VoiceProfile = z.infer<typeof VoiceProfileSchema>;
 export type GenerationJob = z.infer<typeof GenerationJobSchema>;
 export type GenerationJobStep = z.infer<typeof GenerationJobStepSchema>;
+export type JobStatus = z.infer<typeof JobStatusSchema>;
+export type ExecutionTarget = z.infer<typeof ExecutionTargetSchema>;
+export type QueueSnapshot = z.infer<typeof QueueSnapshotSchema>;

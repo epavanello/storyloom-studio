@@ -1,11 +1,12 @@
 <script lang="ts">
   import { invalidateAll } from '$app/navigation';
   import { onMount } from 'svelte';
-  import type { GenerationJob, RenderedChapter } from '$lib/core/schemas';
+  import type { GenerationJob, QueueSnapshot, RenderedChapter } from '$lib/core/schemas';
 
   let { data } = $props();
   let rendered = $state<RenderedChapter | null>(null);
   let jobs = $state<GenerationJob[]>([]);
+  let queues = $state<QueueSnapshot[]>([]);
   let requestError = $state('');
   let activeIndex = $state(0);
   let activeTimeMs = $state(0);
@@ -18,11 +19,16 @@
   const globalTime = $derived((activeUtterance?.startMs ?? 0) + activeTimeMs);
   const activeVisual = $derived(rendered?.visuals.filter((visual) => visual.startMs <= globalTime).at(-1) ?? rendered?.visuals[0]);
   const progress = $derived(rendered ? Math.min(100, globalTime / rendered.totalDurationMs * 100) : 0);
-  const activeJobs = $derived(jobs.filter((job) => job.status === 'queued' || job.status === 'running'));
+  const activeJobs = $derived(jobs.filter((job) => job.status === 'queued' || job.status === 'active'));
   const chapterJobActive = $derived(activeJobs.some((job) => job.kind === 'chapter' && job.chapterId === data.chapterId));
   const registryJobActive = $derived(activeJobs.some((job) => job.kind === 'registry'));
   const latestRelevantJob = $derived(jobs.find((job) => (job.kind === 'chapter' && job.chapterId === data.chapterId) || (job.kind === 'registry' && data.book.registryStatus !== 'ready')));
   const failedJob = $derived(latestRelevantJob?.status === 'failed' ? latestRelevantJob : undefined);
+  // A queued job on a queue nobody is draining would wait forever with no explanation:
+  // that is exactly the case where a user's own worker is not running.
+  const strandedQueues = $derived(
+    queues.filter((queue) => !queue.hasWorker && activeJobs.some((job) => job.queueName === queue.name))
+  );
 
   $effect(() => {
     const chapterId = data.chapterId;
@@ -40,6 +46,7 @@
 
   $effect(() => {
     jobs = data.jobs;
+    queues = data.queues;
   });
 
   onMount(() => {
@@ -52,12 +59,14 @@
   async function refreshJobs() {
     const hadActiveJobs = activeJobs.length > 0;
     try {
-      const response = await fetch(`/api/books/${data.book.id}/jobs`, { cache: 'no-store' });
+      const response = await fetch(`/api/jobs?bookId=${encodeURIComponent(data.book.id)}`, { cache: 'no-store' });
       if (!response.ok) return;
-      jobs = await response.json();
-      if (hadActiveJobs && !jobs.some((job) => job.status === 'queued' || job.status === 'running')) await invalidateAll();
+      const payload = await response.json() as { jobs: GenerationJob[]; queues: QueueSnapshot[] };
+      jobs = payload.jobs;
+      queues = payload.queues;
+      if (hadActiveJobs && !jobs.some((job) => job.status === 'queued' || job.status === 'active')) await invalidateAll();
     } catch {
-      // A transient polling failure should not hide the last persisted progress.
+      // A transient polling failure should not hide the last reported progress.
     }
   }
 
@@ -136,6 +145,7 @@
       {/each}
     </nav>
     <div class="runtime-card"><span><i></i> Runtime · {data.runtime.mode}</span><strong>{data.runtime.mode === 'mock' ? 'Demo provider' : data.runtime.text}</strong><small>{data.runtime.mode === 'mock' ? 'Configure local or cloud models in .env' : `${data.runtime.speech} · ${data.runtime.image} · ${data.runtime.alignment}`}</small></div>
+    <nav class="side-links"><a href="/jobs">Job queue</a><a href="/settings">Settings · {data.execution === 'local' ? 'own machine' : 'cloud'}</a></nav>
   </aside>
 
   <main class="studio-main">
@@ -149,7 +159,10 @@
 
     {#if activeJobs.length}
       <section class="jobs-panel" aria-live="polite">
-        <div class="jobs-heading"><div class="spinner"></div><div><strong>Storyloom is still working</strong><span>Progress survives a browser reload. {data.runtime.mode === 'local' ? 'Local jobs share one memory-safe queue.' : 'Jobs can run concurrently in this mode.'}</span></div></div>
+        <div class="jobs-heading"><div class="spinner"></div><div><strong>Storyloom is still working</strong><span>Progress is held in the queue, so it survives a browser reload and a server restart.</span></div></div>
+        {#if strandedQueues.length}
+          <p class="queue-warning">No worker is connected to <code>{strandedQueues.map((queue) => queue.name).join(', ')}</code>. This job will wait until one is. {data.execution === 'local' ? 'Start `pnpm worker` on the machine that holds your models.' : 'The deployment has no cloud worker running.'}</p>
+        {/if}
         {#each activeJobs as job}
           <article class="job-card">
             <div class="job-summary">

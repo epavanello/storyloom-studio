@@ -1,0 +1,67 @@
+import { Queue } from 'bullmq';
+import type { QueueSnapshot } from '../../core/schemas';
+import { getRedis } from './connection';
+import { targetOfQueue } from './names';
+
+/** Everything a worker needs to run a job; the durable detail stays in Postgres. */
+export type JobPayload = {
+  jobId: string;
+  userId: string;
+  bookId: string;
+  chapterId: string | null;
+  kind: 'registry' | 'chapter';
+};
+
+const stateKey = Symbol.for('storyloom.queues');
+const globalState = globalThis as typeof globalThis & { [stateKey]?: Map<string, Queue<JobPayload>> };
+const queues = globalState[stateKey] ??= new Map<string, Queue<JobPayload>>();
+
+export function getQueue(name: string) {
+  const existing = queues.get(name);
+  if (existing) return existing;
+  const queue = new Queue<JobPayload>(name, {
+    connection: getRedis(),
+    defaultJobOptions: {
+      // Heavy generation is expensive and partially resumable from cached artifacts, so
+      // a failed job is surfaced to the user instead of being retried blindly.
+      attempts: 1,
+      removeOnComplete: { age: 24 * 60 * 60, count: 200 },
+      removeOnFail: { age: 7 * 24 * 60 * 60, count: 200 }
+    }
+  });
+  queues.set(name, queue);
+  return queue;
+}
+
+export async function queueSnapshot(name: string): Promise<QueueSnapshot> {
+  const queue = getQueue(name);
+  const [counts, workers] = await Promise.all([
+    queue.getJobCounts('waiting', 'active', 'delayed', 'completed', 'failed'),
+    // Surfacing this matters: a local queue with no worker means the user's own machine
+    // is offline and the job would wait indefinitely without explanation.
+    queue.getWorkers().catch(() => [])
+  ]);
+  return {
+    name,
+    target: targetOfQueue(name),
+    waiting: counts.waiting ?? 0,
+    active: counts.active ?? 0,
+    delayed: counts.delayed ?? 0,
+    completed: counts.completed ?? 0,
+    failed: counts.failed ?? 0,
+    hasWorker: workers.length > 0
+  };
+}
+
+/** 1-based position among the jobs still waiting on the same queue. */
+export async function waitingPosition(name: string, jobId: string) {
+  const waiting = await getQueue(name).getWaiting(0, 500);
+  const index = waiting.findIndex((job) => job.id === jobId);
+  return index >= 0 ? index + 1 : null;
+}
+
+export async function closeQueues() {
+  const open = [...queues.values()];
+  queues.clear();
+  await Promise.all(open.map((queue) => queue.close()));
+}
