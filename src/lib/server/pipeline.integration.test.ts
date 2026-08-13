@@ -98,7 +98,7 @@ suite('distributed generation pipeline', () => {
     expect(await modules.store.listBooks(stranger)).toHaveLength(0);
     await expect(modules.store.getManifest(stranger, bookId)).rejects.toThrow(modules.store.BookNotFoundError);
     await expect(modules.store.assertBookOwner(stranger, bookId)).rejects.toThrow();
-    await expect(modules.store.deleteBook(stranger, bookId)).rejects.toThrow();
+    await expect(modules.store.trashBook(stranger, bookId)).rejects.toThrow();
     // And the owner still has it after the failed deletion attempt.
     expect(await modules.store.getManifest(owner, bookId)).toBeTruthy();
   });
@@ -173,10 +173,20 @@ suite('distributed generation pipeline', () => {
     await expect(modules.jobs.assertNoActiveJobs(owner, bookId)).resolves.toBeUndefined();
   }, 30_000);
 
-  it('removes objects and rows together when the owner deletes a book', async () => {
+  it('keeps a trashed book recoverable, and purging removes rows and objects together', async () => {
     const rendered = await modules.store.getRenderedChapter(bookId, (await modules.store.getManifest(owner, bookId)).chapters[0].id);
     const audio = rendered!.utterances[0].audio;
-    await modules.store.deleteBook(owner, bookId);
+
+    await modules.store.trashBook(owner, bookId);
+    expect(await modules.store.listBooks(owner)).toHaveLength(0);
+    expect((await modules.store.listTrashedBooks(owner)).map((book) => book.id)).toContain(bookId);
+    // Trashing costs nothing: the render is still on disk and comes back intact.
+    expect((await modules.store.readArtifact(audio)).byteLength).toBeGreaterThan(0);
+    await modules.store.restoreBook(owner, bookId);
+    expect(await modules.store.getManifest(owner, bookId)).toBeTruthy();
+
+    await modules.store.trashBook(owner, bookId);
+    await modules.store.purgeBook(owner, bookId);
     await expect(modules.store.getManifest(owner, bookId)).rejects.toThrow();
     await expect(modules.store.readArtifact(audio)).rejects.toThrow();
   }, 30_000);

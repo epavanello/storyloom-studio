@@ -1,34 +1,48 @@
 import { relations, sql } from 'drizzle-orm';
-import { boolean, index, integer, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core';
-import type { Character, GenerationJobStep, RenderedChapter, VoiceProfile } from '../../core/schemas';
+import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import type {
+  BookManifest,
+  Character,
+  GenerationJobStep,
+  RenderedChapter,
+  VoiceProfile,
+  WorldElement
+} from '../../core/schemas';
+
+// SQLite through libSQL, so the same schema serves a local file on one machine and a
+// hosted Turso database when the web tier and the worker are on different machines.
+// Timestamps are stored as epoch milliseconds; structured values as JSON text.
+
+const createdAt = () => integer('created_at', { mode: 'timestamp_ms' }).notNull().$defaultFn(() => new Date());
+const updatedAt = () => integer('updated_at', { mode: 'timestamp_ms' }).notNull().$defaultFn(() => new Date());
 
 // ---------------------------------------------------------------------------
 // better-auth owns the four tables below. Column names follow better-auth's
 // default model shape; renaming any of them breaks the drizzle adapter.
 // ---------------------------------------------------------------------------
 
-export const user = pgTable('user', {
+export const user = sqliteTable('user', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
   email: text('email').notNull().unique(),
-  emailVerified: boolean('email_verified').notNull().default(false),
+  emailVerified: integer('email_verified', { mode: 'boolean' }).notNull().default(false),
   image: text('image'),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+  createdAt: createdAt(),
+  updatedAt: updatedAt()
 });
 
-export const session = pgTable('session', {
+export const session = sqliteTable('session', {
   id: text('id').primaryKey(),
   token: text('token').notNull().unique(),
-  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  expiresAt: integer('expires_at', { mode: 'timestamp_ms' }).notNull(),
   ipAddress: text('ip_address'),
   userAgent: text('user_agent'),
   userId: text('user_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+  createdAt: createdAt(),
+  updatedAt: updatedAt()
 }, (table) => [index('session_user_id_idx').on(table.userId)]);
 
-export const account = pgTable('account', {
+export const account = sqliteTable('account', {
   id: text('id').primaryKey(),
   accountId: text('account_id').notNull(),
   providerId: text('provider_id').notNull(),
@@ -36,21 +50,21 @@ export const account = pgTable('account', {
   accessToken: text('access_token'),
   refreshToken: text('refresh_token'),
   idToken: text('id_token'),
-  accessTokenExpiresAt: timestamp('access_token_expires_at', { withTimezone: true }),
-  refreshTokenExpiresAt: timestamp('refresh_token_expires_at', { withTimezone: true }),
+  accessTokenExpiresAt: integer('access_token_expires_at', { mode: 'timestamp_ms' }),
+  refreshTokenExpiresAt: integer('refresh_token_expires_at', { mode: 'timestamp_ms' }),
   scope: text('scope'),
   password: text('password'),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+  createdAt: createdAt(),
+  updatedAt: updatedAt()
 }, (table) => [index('account_user_id_idx').on(table.userId)]);
 
-export const verification = pgTable('verification', {
+export const verification = sqliteTable('verification', {
   id: text('id').primaryKey(),
   identifier: text('identifier').notNull(),
   value: text('value').notNull(),
-  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+  expiresAt: integer('expires_at', { mode: 'timestamp_ms' }).notNull(),
+  createdAt: createdAt(),
+  updatedAt: updatedAt()
 }, (table) => [index('verification_identifier_idx').on(table.identifier)]);
 
 // ---------------------------------------------------------------------------
@@ -63,32 +77,36 @@ export const verification = pgTable('verification', {
  * recovered with STORYLOOM_ENCRYPTION_KEY at job execution time and is never sent to
  * the browser, logged, or embedded in an artifact.
  */
-export const providerCredentials = pgTable('provider_credentials', {
+export const providerCredentials = sqliteTable('provider_credentials', {
   userId: text('user_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
   provider: text('provider').notNull(),
   ciphertext: text('ciphertext').notNull(),
   iv: text('iv').notNull(),
   authTag: text('auth_tag').notNull(),
   hint: text('hint').notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+  createdAt: createdAt(),
+  updatedAt: updatedAt()
 }, (table) => [primaryKey({ columns: [table.userId, table.provider] })]);
 
-export const books = pgTable('books', {
+export const books = sqliteTable('books', {
   id: text('id').primaryKey(),
   userId: text('user_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
   schemaVersion: integer('schema_version').notNull().default(1),
   title: text('title').notNull(),
   sourceName: text('source_name').notNull(),
   registryStatus: text('registry_status', { enum: ['pending', 'processing', 'ready', 'failed'] }).notNull().default('pending'),
-  characters: jsonb('characters').$type<Character[]>().notNull().default(sql`'[]'::jsonb`),
-  voices: jsonb('voices').$type<VoiceProfile[]>().notNull().default(sql`'[]'::jsonb`),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+  characters: text('characters', { mode: 'json' }).$type<Character[]>().notNull().$defaultFn(() => []),
+  worldElements: text('world_elements', { mode: 'json' }).$type<WorldElement[]>().notNull().$defaultFn(() => []),
+  voices: text('voices', { mode: 'json' }).$type<VoiceProfile[]>().notNull().$defaultFn(() => []),
+  visualStyle: text('visual_style', { mode: 'json' }).$type<BookManifest['visualStyle']>(),
+  /** Set when the owner moves the book to the trash. Recoverable until purged. */
+  trashedAt: integer('trashed_at', { mode: 'timestamp_ms' }),
+  createdAt: createdAt(),
+  updatedAt: updatedAt()
 }, (table) => [index('books_user_id_created_at_idx').on(table.userId, table.createdAt)]);
 
 /** Chapter text is stored in its own row so listing a library never loads a whole book. */
-export const chapters = pgTable('chapters', {
+export const chapters = sqliteTable('chapters', {
   bookId: text('book_id').notNull().references(() => books.id, { onDelete: 'cascade' }),
   id: text('id').notNull(),
   order: integer('order').notNull(),
@@ -100,43 +118,53 @@ export const chapters = pgTable('chapters', {
   index('chapters_book_id_order_idx').on(table.bookId, table.order)
 ]);
 
-export const renderedChapters = pgTable('rendered_chapters', {
+export const renderedChapters = sqliteTable('rendered_chapters', {
   bookId: text('book_id').notNull().references(() => books.id, { onDelete: 'cascade' }),
   chapterId: text('chapter_id').notNull(),
-  data: jsonb('data').$type<RenderedChapter>().notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+  data: text('data', { mode: 'json' }).$type<RenderedChapter>().notNull(),
+  createdAt: createdAt()
 }, (table) => [primaryKey({ columns: [table.bookId, table.chapterId] })]);
 
 export const jobStatuses = ['queued', 'active', 'completed', 'failed', 'cancelled'] as const;
+export const jobKinds = ['registry', 'chapter', 'chapter-audio', 'character-reference'] as const;
 
 /**
  * The durable record of a job. Live per-step progress lives in Redis instead, so a
- * running job does not keep writing to Postgres — that keeps a serverless database
- * suspended for everything except state transitions.
+ * running job does not keep writing to the database — which matters just as much for a
+ * hosted SQLite as it does for a local file being read by two processes.
  */
-export const jobs = pgTable('jobs', {
+export const jobs = sqliteTable('jobs', {
   id: text('id').primaryKey(),
   userId: text('user_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
   bookId: text('book_id').notNull().references(() => books.id, { onDelete: 'cascade' }),
   chapterId: text('chapter_id'),
-  kind: text('kind', { enum: ['registry', 'chapter'] }).notNull(),
+  characterId: text('character_id'),
+  /**
+   * What this job regenerates, as one value. It exists so the uniqueness rule below can
+   * be a plain column index: a SQL expression over two nullable columns is both harder
+   * to read and not portable through the migration generator.
+   */
+  targetKey: text('target_key').notNull(),
+  kind: text('kind', { enum: jobKinds }).notNull(),
   status: text('status', { enum: jobStatuses }).notNull().default('queued'),
+  /** Forces regeneration even when a cached render exists. */
+  force: integer('force', { mode: 'boolean' }).notNull().default(false),
   /** The deployment's runtime profile when the job was accepted, kept for provenance. */
   mode: text('mode', { enum: ['mock', 'local', 'cloud', 'hybrid'] }).notNull(),
   attempts: integer('attempts').notNull().default(0),
-  steps: jsonb('steps').$type<GenerationJobStep[]>().notNull().default(sql`'[]'::jsonb`),
+  steps: text('steps', { mode: 'json' }).$type<GenerationJobStep[]>().notNull().$defaultFn(() => []),
   error: text('error'),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-  startedAt: timestamp('started_at', { withTimezone: true }),
-  completedAt: timestamp('completed_at', { withTimezone: true })
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+  startedAt: integer('started_at', { mode: 'timestamp_ms' }),
+  completedAt: integer('completed_at', { mode: 'timestamp_ms' })
 }, (table) => [
   index('jobs_user_id_created_at_idx').on(table.userId, table.createdAt),
   index('jobs_book_id_created_at_idx').on(table.bookId, table.createdAt),
   // At most one unfinished job per target, enforced by the database rather than by a
   // read-then-write race in application code.
   uniqueIndex('jobs_active_target_idx')
-    .on(table.bookId, table.kind, sql`coalesce(${table.chapterId}, '')`)
+    .on(table.bookId, table.kind, table.targetKey)
     .where(sql`${table.status} in ('queued', 'active')`)
 ]);
 

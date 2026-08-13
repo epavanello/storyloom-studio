@@ -47,6 +47,8 @@
     </div>
   </section>
 
+  {#if form?.message}<p class="form-error library-error">{form.message}</p>{/if}
+
   {#if data.books.length}
     <section class="library-section">
       <div class="section-title"><div><p class="eyebrow">Your shelf</p><h2>Continue listening</h2></div><span>{data.books.length} {data.books.length === 1 ? 'book' : 'books'}</span></div>
@@ -58,19 +60,42 @@
               <div><strong>{book.title}</strong><span>{book.registryStatus === 'ready' ? `${book.characterCount} characters ready` : 'Ready to prepare'}</span></div>
               <b>→</b>
             </a>
-            <form
-              method="POST"
-              action="?/delete"
-              use:enhance={() => async ({ update }) => { await update({ reset: false }); }}
-              onsubmit={(event) => { if (!confirm(`Delete “${book.title}” and every render and artifact generated from it? This cannot be undone.`)) event.preventDefault(); }}
-            >
+            <form method="POST" action="?/trash" use:enhance={() => async ({ update }) => { await update({ reset: false }); }}>
               <input type="hidden" name="bookId" value={book.id} />
-              <button class="book-delete" aria-label={`Delete ${book.title}`} title="Delete this book">×</button>
+              <button class="book-delete" aria-label={`Move ${book.title} to the trash`} title="Move to trash">×</button>
             </form>
           </div>
         {/each}
       </div>
     </section>
   {/if}
-</main>
 
+  {#if data.trashed.length}
+    <section class="library-section">
+      <div class="section-title"><div><p class="eyebrow">Recoverable</p><h2>Trash</h2></div><span>{data.trashed.length} {data.trashed.length === 1 ? 'book' : 'books'}</span></div>
+      <p class="trash-note">Trashed books keep their renders and artifacts, so restoring one costs nothing. Deleting for good removes the generated media too.</p>
+      <ul class="trash-list">
+        {#each data.trashed as book}
+          <li>
+            <div><strong>{book.title}</strong><small>{book.chapterCount} chapters · trashed {new Date(book.trashedAt ?? book.createdAt).toLocaleDateString()}</small></div>
+            <div class="trash-actions">
+              <form method="POST" action="?/restore" use:enhance={() => async ({ update }) => { await update({ reset: false }); }}>
+                <input type="hidden" name="bookId" value={book.id} />
+                <button class="text-button">Restore</button>
+              </form>
+              <form
+                method="POST"
+                action="?/purge"
+                use:enhance={() => async ({ update }) => { await update({ reset: false }); }}
+                onsubmit={(event) => { if (!confirm(`Permanently delete “${book.title}” and every render and artifact generated from it? This cannot be undone.`)) event.preventDefault(); }}
+              >
+                <input type="hidden" name="bookId" value={book.id} />
+                <button class="text-button danger">Delete for good</button>
+              </form>
+            </div>
+          </li>
+        {/each}
+      </ul>
+    </section>
+  {/if}
+</main>

@@ -1,5 +1,73 @@
 import { ChapterPlanSchema, type ChapterPlan } from './schemas';
 
+const quotePairs = new Map([['«', '»'], ['“', '”'], ['‹', '›'], ['"', '"']]);
+
+export function splitAttributedNarration(value: unknown): ChapterPlan {
+  const plan = ChapterPlanSchema.parse(value);
+  const anchorMap = new Map<string, string>();
+  const utterances = plan.utterances.flatMap((utterance) => {
+    if (!utterance.speakerCharacterId) return [utterance];
+    const spans: { start: number; end: number }[] = [];
+    for (let cursor = 0; cursor < utterance.text.length; cursor += 1) {
+      const closing = quotePairs.get(utterance.text[cursor]);
+      if (!closing) continue;
+      const end = utterance.text.indexOf(closing, cursor + 1);
+      if (end < 0) continue;
+      spans.push({ start: cursor, end: end + 1 });
+      cursor = end;
+    }
+    if (!spans.length) return [utterance];
+
+    const parts: { text: string; speakerCharacterId: string | null }[] = [];
+    let cursor = 0;
+    for (const span of spans) {
+      if (span.start > cursor) parts.push({ text: utterance.text.slice(cursor, span.start), speakerCharacterId: null });
+      parts.push({ text: utterance.text.slice(span.start, span.end), speakerCharacterId: utterance.speakerCharacterId });
+      cursor = span.end;
+    }
+    if (cursor < utterance.text.length) parts.push({ text: utterance.text.slice(cursor), speakerCharacterId: null });
+    const meaningful = parts.filter((part) => part.text.length > 0);
+    if (meaningful.length === 1) return [utterance];
+
+    const split = meaningful.map((part, index) => ({
+      ...utterance,
+      id: `${utterance.id}-${part.speakerCharacterId ? 'dialogue' : 'narration'}-${index + 1}`,
+      text: part.text,
+      speakerCharacterId: part.speakerCharacterId,
+      direction: part.speakerCharacterId
+        ? { ...utterance.direction, pauseAfterMs: index === meaningful.length - 1 ? utterance.direction.pauseAfterMs : 60 }
+        : { emotion: 'neutral', intensity: Math.min(0.35, utterance.direction.intensity), pace: 'natural' as const, pauseAfterMs: index === meaningful.length - 1 ? utterance.direction.pauseAfterMs : 60 }
+    }));
+    anchorMap.set(utterance.id, split[0].id);
+    return split;
+  }).map((utterance, order) => ({ ...utterance, order }));
+
+  const remapAnchor = <T extends { utteranceId: string }>(cue: T): T => ({ ...cue, utteranceId: anchorMap.get(cue.utteranceId) ?? cue.utteranceId });
+  return { ...plan, utterances, visuals: plan.visuals.map(remapAnchor), sounds: plan.sounds.map(remapAnchor) };
+}
+
+export function visualBeatRange(sourceText: string) {
+  const words = sourceText.trim() ? sourceText.trim().split(/\s+/u).length : 0;
+  const minimum = words < 120 ? 1 : words < 350 ? 2 : Math.min(8, Math.max(3, Math.ceil(words / 250)));
+  return { minimum, maximum: Math.min(10, minimum + 2) };
+}
+
+export function validateVisualBeatCoverage(plan: ChapterPlan, minimum: number, maximum: number) {
+  if (plan.visuals.length < minimum || plan.visuals.length > maximum) {
+    throw new Error(`Visual direction requires ${minimum}-${maximum} beats; received ${plan.visuals.length}`);
+  }
+  if (minimum >= 3) {
+    const positions = plan.visuals
+      .map((visual) => plan.utterances.findIndex((utterance) => utterance.id === visual.utteranceId))
+      .sort((a, b) => a - b);
+    const lastIndex = Math.max(1, plan.utterances.length - 1);
+    if (positions[0] > lastIndex / 3 || positions.at(-1)! < lastIndex * 2 / 3) {
+      throw new Error('Visual beats must cover both the opening and final third of the chapter');
+    }
+  }
+  return plan;
+}
+
 export function locateChapterPlanText(sourceText: string, value: unknown): ChapterPlan {
   const plan = ChapterPlanSchema.parse(value);
   let cursor = 0;
@@ -29,11 +97,13 @@ export function validateChapterPlan(
   sourceText: string,
   chapterId: string,
   knownCharacterIds: Iterable<string>,
-  value: unknown
+  value: unknown,
+  knownWorldElementIds: Iterable<string> = []
 ): ChapterPlan {
   const plan = ChapterPlanSchema.parse(value);
   const errors: string[] = [];
   const characters = new Set(knownCharacterIds);
+  const worldElements = new Set(knownWorldElementIds);
 
   if (plan.chapterId !== chapterId) errors.push(`chapterId must be ${chapterId}`);
 
@@ -73,6 +143,9 @@ export function validateChapterPlan(
     if (!utteranceIds.has(visual.utteranceId)) errors.push(`${visual.id} references unknown utterance ${visual.utteranceId}`);
     for (const characterId of visual.characterIds) {
       if (!characters.has(characterId)) errors.push(`${visual.id} references unknown character ${characterId}`);
+    }
+    for (const worldElementId of visual.worldElementIds) {
+      if (!worldElements.has(worldElementId)) errors.push(`${visual.id} references unknown world element ${worldElementId}`);
     }
   }
 

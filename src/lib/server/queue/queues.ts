@@ -1,5 +1,5 @@
 import { Queue } from 'bullmq';
-import type { QueueSnapshot } from '../../core/schemas';
+import type { JobKind, QueueSnapshot } from '../../core/schemas';
 import { getConfig } from '../config';
 import { getRedis } from './connection';
 
@@ -15,7 +15,9 @@ export type JobPayload = {
   userId: string;
   bookId: string;
   chapterId: string | null;
-  kind: 'registry' | 'chapter';
+  characterId: string | null;
+  kind: JobKind;
+  force: boolean;
 };
 
 const stateKey = Symbol.for('storyloom.queues');

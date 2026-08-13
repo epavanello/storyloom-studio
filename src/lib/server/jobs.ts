@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq, inArray } from 'drizzle-orm';
-import { GenerationJobSchema, type GenerationJob, type GenerationJobStep } from '../core/schemas';
+import { GenerationJobSchema, type GenerationJob, type GenerationJobStep, type JobKind } from '../core/schemas';
 import { getConfig } from './config';
 import { getDb } from './db/client';
 import { jobs } from './db/schema';
@@ -11,7 +11,9 @@ import { assertBookOwner } from './store';
 
 export type JobRequest =
   | { kind: 'registry'; bookId: string }
-  | { kind: 'chapter'; bookId: string; chapterId: string };
+  | { kind: 'chapter'; bookId: string; chapterId: string; force?: boolean }
+  | { kind: 'chapter-audio'; bookId: string; chapterId: string }
+  | { kind: 'character-reference'; bookId: string; characterId: string };
 
 /** Raised when a cancel request is observed between steps. */
 export class JobCancelledError extends Error {
@@ -27,11 +29,13 @@ function step(id: string, label: string): GenerationJobStep {
   return { id, label, status: 'pending', completed: 0, total: 1 };
 }
 
-export function stepsFor(kind: GenerationJob['kind']): GenerationJobStep[] {
+export function stepsFor(kind: JobKind): GenerationJobStep[] {
+  if (kind === 'character-reference') return [step('character-reference', 'Regenerate illustrated character reference')];
+  if (kind === 'chapter-audio') return [step('speech', 'Regenerate narration and dialogue'), step('alignment', 'Realign words and audio')];
   return kind === 'registry'
-    ? [step('registry-analysis', 'Read chapters and identify characters'), step('registry-references', 'Generate identity sheets')]
+    ? [step('registry-analysis', 'Read chapters and build continuity registries'), step('registry-references', 'Generate selected continuity references')]
     : [
-        step('registry', 'Lock character identities'),
+        step('registry', 'Lock character, voice, and world identities'),
         step('plan', 'Direct the chapter'),
         step('speech', 'Generate narration and dialogue'),
         step('alignment', 'Synchronize words and audio'),
@@ -46,6 +50,8 @@ function toJob(row: JobRow, queuePosition: number | null = null): GenerationJob 
     kind: row.kind,
     bookId: row.bookId,
     chapterId: row.chapterId,
+    characterId: row.characterId,
+    force: row.force,
     userId: row.userId,
     mode: row.mode,
     status: row.status,
@@ -61,18 +67,25 @@ function toJob(row: JobRow, queuePosition: number | null = null): GenerationJob 
 }
 
 function isUniqueViolation(error: unknown) {
-  return typeof error === 'object' && error !== null && 'code' in error && (error as { code?: string }).code === '23505';
+  const message = error instanceof Error ? error.message : String(error);
+  return /UNIQUE constraint failed|SQLITE_CONSTRAINT/i.test(message);
 }
 
-async function findActiveJob(bookId: string, request: JobRequest) {
+function targetOf(request: JobRequest) {
+  const chapterId = request.kind === 'chapter' || request.kind === 'chapter-audio' ? request.chapterId : null;
+  const characterId = request.kind === 'character-reference' ? request.characterId : null;
+  return { chapterId, characterId, targetKey: `${chapterId ?? ''}|${characterId ?? ''}` };
+}
+
+async function findActiveJob(request: JobRequest) {
   const db = getDb();
   const rows = await db
     .select()
     .from(jobs)
-    .where(and(eq(jobs.bookId, bookId), eq(jobs.kind, request.kind), inArray(jobs.status, ['queued', 'active'])))
+    .where(and(eq(jobs.bookId, request.bookId), eq(jobs.kind, request.kind), inArray(jobs.status, ['queued', 'active'])))
     .orderBy(desc(jobs.createdAt));
-  const chapterId = request.kind === 'chapter' ? request.chapterId : null;
-  return rows.find((row) => row.chapterId === chapterId) ?? null;
+  const { targetKey } = targetOf(request);
+  return rows.find((row) => row.targetKey === targetKey) ?? null;
 }
 
 /**
@@ -82,16 +95,17 @@ async function findActiveJob(bookId: string, request: JobRequest) {
  */
 export async function startGenerationJob(userId: string, request: JobRequest): Promise<GenerationJob> {
   await assertBookOwner(userId, request.bookId);
-  const existing = await findActiveJob(request.bookId, request);
+  const existing = await findActiveJob(request);
   if (existing) return decorate(toJob(existing));
 
   const row = {
     id: `job-${randomUUID()}`,
     userId,
     bookId: request.bookId,
-    chapterId: request.kind === 'chapter' ? request.chapterId : null,
+    ...targetOf(request),
     kind: request.kind,
     status: 'queued' as const,
+    force: request.kind === 'chapter' ? Boolean(request.force) : false,
     mode: getConfig().mode,
     steps: stepsFor(request.kind)
   };
@@ -103,7 +117,7 @@ export async function startGenerationJob(userId: string, request: JobRequest): P
     // The partial unique index is the real guard when two tabs race; losing that race
     // simply means joining the job that won.
     if (!isUniqueViolation(error)) throw error;
-    const winner = await findActiveJob(request.bookId, request);
+    const winner = await findActiveJob(request);
     if (winner) return decorate(toJob(winner));
     throw error;
   }
@@ -113,7 +127,9 @@ export async function startGenerationJob(userId: string, request: JobRequest): P
     userId,
     bookId: row.bookId,
     chapterId: row.chapterId,
-    kind: row.kind
+    characterId: row.characterId,
+    kind: row.kind,
+    force: row.force
   };
   await getQueue(JOBS_QUEUE).add(row.kind, payload, { jobId: row.id });
 
@@ -130,8 +146,8 @@ async function decorate(job: GenerationJob): Promise<GenerationJob> {
 
 /**
  * Recent jobs for a user. Live state comes from Redis so an open browser tab polling for
- * progress never wakes the database; Postgres fills in anything older than the Redis
- * retention window.
+ * progress never touches the database; the database fills in anything older than the
+ * Redis retention window.
  */
 export async function jobsForUser(userId: string, options: { bookId?: string; limit?: number } = {}) {
   const limit = options.limit ?? 50;
@@ -183,8 +199,8 @@ export async function cancelJob(userId: string, jobId: string) {
 }
 
 /**
- * Guards a destructive action on a book. Deleting one while a worker is mid-render
- * would leave that worker writing artifacts into a namespace that no longer exists.
+ * Guards a destructive action on a book. Trashing one while a worker is mid-render
+ * would leave that worker writing artifacts for a book that has left the library.
  */
 export async function assertNoActiveJobs(userId: string, bookId: string) {
   const db = getDb();
@@ -231,8 +247,8 @@ export async function markJobActive(jobId: string) {
 }
 
 /**
- * Applies a step update to the live Redis copy only. The steps array is flushed to
- * Postgres once, when the job reaches a terminal state.
+ * Applies a step update to the live Redis copy only. The steps array is flushed to the
+ * database once, when the job reaches a terminal state.
  */
 export async function reportJobProgress(jobId: string, update: ProgressUpdate) {
   if (await isCancellationRequested(jobId)) throw new JobCancelledError();

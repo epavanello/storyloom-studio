@@ -22,8 +22,12 @@ const WorkerModeSchema = z.enum(['inline', 'external', 'off']);
 
 export const AppConfigSchema = z.object({
   mode: RuntimeModeSchema,
+  /** Reveals provider, model and timing detail in the UI. Off for ordinary readers. */
+  technicalUi: z.boolean(),
   publicUrl: z.string(),
+  /** `file:./data/storyloom.db` for one machine, `libsql://…turso.io` when distributed. */
   databaseUrl: z.string(),
+  databaseAuthToken: z.string(),
   redisUrl: z.string(),
   /**
    * Namespaces every queue and live-state key in Redis. Two deployments — or a dev
@@ -61,6 +65,7 @@ export const AppConfigSchema = z.object({
   localLlmModelKey: z.string(),
   openRouterApiKey: z.string(),
   openRouterLlmModel: z.string(),
+  localTtsEngine: z.enum(['qwen', 'chatterbox-v3']),
   localTtsBaseUrl: z.string(),
   localTtsModel: z.string(),
   localTtsRuntimeModel: z.string(),
@@ -103,8 +108,10 @@ export function getConfig(): AppConfig {
   const mode = env.STORYLOOM_MODE ?? 'mock';
   return AppConfigSchema.parse({
     mode,
+    technicalUi: flag(env.STORYLOOM_TECHNICAL_UI, false),
     publicUrl: (env.STORYLOOM_PUBLIC_URL ?? 'http://localhost:4173').replace(/\/$/, ''),
     databaseUrl: env.DATABASE_URL ?? '',
+    databaseAuthToken: env.DATABASE_AUTH_TOKEN ?? '',
     redisUrl: env.REDIS_URL ?? '',
     queuePrefix: env.STORYLOOM_QUEUE_PREFIX || 'storyloom',
     encryptionKey: env.STORYLOOM_ENCRYPTION_KEY ?? '',
@@ -140,6 +147,7 @@ export function getConfig(): AppConfig {
     localLlmModelKey: env.LOCAL_LLM_MODEL_KEY ?? env.LOCAL_LLM_MODEL ?? 'local-model',
     openRouterApiKey: env.OPENROUTER_API_KEY ?? '',
     openRouterLlmModel: env.OPENROUTER_LLM_MODEL ?? 'deepseek/deepseek-v4-flash-0731',
+    localTtsEngine: env.LOCAL_TTS_ENGINE ?? 'qwen',
     localTtsBaseUrl: env.LOCAL_TTS_BASE_URL ?? 'http://127.0.0.1:7861/v1',
     localTtsModel: env.LOCAL_TTS_MODEL ?? 'qwen3-tts',
     localTtsRuntimeModel: env.LOCAL_TTS_RUNTIME_MODEL ?? 'mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-8bit',
@@ -147,8 +155,8 @@ export function getConfig(): AppConfig {
     localImageModel: env.LOCAL_IMAGE_MODEL ?? 'qwen-image-edit',
     localImageRuntimeModel: env.LOCAL_IMAGE_RUNTIME_MODEL ?? 'mlx-community/flux2-klein-4b-4bit',
     localAlignerBaseUrl: env.LOCAL_ALIGNER_BASE_URL ?? '',
-    openRouterTtsModel: env.OPENROUTER_TTS_MODEL ?? 'qwen/qwen-audio-3.0-tts-flash',
-    openRouterTtsVoices: list(env.OPENROUTER_TTS_VOICES, ['loongjohn', 'longanhuan_v3.6']),
+    openRouterTtsModel: env.OPENROUTER_TTS_MODEL ?? 'google/gemini-3.1-flash-tts-preview',
+    openRouterTtsVoices: list(env.OPENROUTER_TTS_VOICES, ['Zephyr', 'Puck', 'Charon', 'Kore', 'Fenrir', 'Leda', 'Orus', 'Aoede', 'Callirrhoe', 'Autonoe', 'Enceladus', 'Iapetus', 'Umbriel', 'Algieba', 'Despina', 'Erinome', 'Algenib', 'Rasalgethi', 'Laomedeia', 'Achernar', 'Alnilam', 'Schedar', 'Gacrux', 'Pulcherrima', 'Achird', 'Zubenelgenubi', 'Vindemiatrix', 'Sadachbia', 'Sadaltager', 'Sulafat']),
     openRouterImageModel: env.OPENROUTER_IMAGE_MODEL ?? 'google/gemini-3.1-flash-image',
     policies: {
       text: env.TEXT_POLICY ?? 'local-preferred',
@@ -162,7 +170,9 @@ export function getConfig(): AppConfig {
 /** Fails loudly instead of letting a missing connection string surface as a driver error. */
 export function requireDatabaseUrl() {
   const { databaseUrl } = getConfig();
-  if (!databaseUrl) throw new Error('DATABASE_URL is not set. Point it at your Neon (or local) Postgres instance.');
+  if (!databaseUrl) {
+    throw new Error('DATABASE_URL is not set. Use file:./data/storyloom.db for a single machine, or a libsql://…turso.io URL when the worker runs elsewhere.');
+  }
   return databaseUrl;
 }
 

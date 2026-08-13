@@ -188,7 +188,7 @@ Changes may improve this sequence, but they must preserve the separation of resp
 - Server modules must not leak secrets into client-side data.
 - **Must not import SvelteKit aliases or modules** (`$lib/*`, `$env/*`, `@sveltejs/kit`). The standalone worker imports this tree directly and runs outside SvelteKit; use relative imports. `src/lib/server/session.ts` is the deliberate exception and is only reachable from routes.
 - `db/` owns the Drizzle schema, the connection and the migrations. `storage/` owns the object-storage drivers. `queue/` owns queue naming, live job state and the worker runtime.
-- Nothing may poll Postgres. Frequent or periodic state belongs in Redis; the database sees durable transitions only.
+- Nothing may poll the database. Frequent or periodic state belongs in Redis; the database sees durable transitions only.
 
 ### `src/lib/server/providers`
 
@@ -313,7 +313,8 @@ Changes may improve this sequence, but they must preserve the separation of resp
 - Prefer pure validation and transformation functions that can be tested without models.
 - Use clear domain names such as `ChapterPlan`, `VoiceProfile`, `VisualCue`, and `ArtifactRef`.
 - Avoid broad refactors while implementing a focused task unless the current design genuinely blocks correctness.
-- Postgres, Redis, BullMQ and S3-compatible storage are the deliberate infrastructure of the deployable service. Anything beyond them — another datastore, a container platform, a distributed workflow engine — still needs a demonstrated requirement and explicit scope expansion.
+- SQLite through libSQL, Redis with BullMQ, and filesystem or S3-compatible storage are the deliberate infrastructure of the deployable service. Anything beyond them — another datastore, a container platform, a distributed workflow engine — still needs a demonstrated requirement and explicit scope expansion.
+- The database and the object store are swappable by configuration, not by code. A change that works only against a local file, or only against the hosted form, is incomplete.
 - Keep the queue a queue. Job handlers map a queue entry onto the orchestrator; they do not acquire creative or routing decisions of their own.
 - Preserve existing formatting and conventions unless the task includes a formatting migration.
 - Add comments for non-obvious invariants and provider quirks, not for code that explains itself.
@@ -352,7 +353,7 @@ If the repository standardizes on another invocation later, update this section 
 
 Use deterministic mocks for unit tests. Real-provider tests must be opt-in, clearly named, protected from accidental cost, and must never require secrets for the default test suite.
 
-Tests that need Postgres and Redis are named `*.integration.test.ts` and skip themselves unless `DATABASE_URL` and `REDIS_URL` are set, so `pnpm test` runs with no services. Start them with `docker compose -f docker-compose.dev.yml up -d`, then `pnpm db:migrate`. An integration test must clean up the rows and objects it created.
+Tests that need a database and Redis are named `*.integration.test.ts` and skip themselves unless `DATABASE_URL` and `REDIS_URL` are set, so `pnpm test` runs with no services. Start Redis with `docker compose -f docker-compose.dev.yml up -d`, point `DATABASE_URL` at a scratch `file:` database, then `pnpm db:migrate`. An integration test must clean up the rows and objects it created.
 
 ### End-to-end validation
 
@@ -488,6 +489,7 @@ When a safe local mock or reversible implementation can proceed without resolvin
 - Building generalized infrastructure beyond the deployment the user asked for. The database, queue and object storage exist because a multi-account service with a detached worker requires them; that is not a licence to generalize further.
 - Scoping a query by an ID from the request without also scoping it by owner.
 - Polling the database, or writing per-step progress to it.
+- Writing a query or migration that only works against one of the two database forms.
 - Handing database or Redis credentials to a machine whose operator may not read every account's data.
 - Reintroducing per-account execution routing because a single deployment mode felt limiting.
 

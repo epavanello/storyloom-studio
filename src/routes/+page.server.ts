@@ -3,11 +3,12 @@ import { fail, redirect } from '@sveltejs/kit';
 import { assertNoActiveJobs } from '$lib/server/jobs';
 import { ingestBook } from '$lib/server/orchestrator';
 import { requireUser } from '$lib/server/session';
-import { deleteBook, listBooks } from '$lib/server/store';
+import { listBooks, listTrashedBooks, purgeBook, restoreBook, trashBook } from '$lib/server/store';
 
 export const load: PageServerLoad = async ({ locals }) => {
   const user = requireUser(locals);
-  return { books: await listBooks(user.id) };
+  const [books, trashed] = await Promise.all([listBooks(user.id), listTrashedBooks(user.id)]);
+  return { books, trashed };
 };
 
 export const actions: Actions = {
@@ -32,16 +33,37 @@ export const actions: Actions = {
     const book = await ingestBook(user.id, 'The Observatory.txt', new TextEncoder().encode(sample));
     redirect(303, `/books/${book.id}`);
   },
-  delete: async ({ locals, request }) => {
+  /** Recoverable: the book leaves the library but keeps its rows and artifacts. */
+  trash: async ({ locals, request }) => {
     const user = requireUser(locals);
     const bookId = String((await request.formData()).get('bookId') ?? '');
     if (!bookId) return fail(400, { message: 'Missing book.' });
     try {
       await assertNoActiveJobs(user.id, bookId);
-      await deleteBook(user.id, bookId);
+      await trashBook(user.id, bookId);
     } catch (error) {
-      return fail(400, { message: error instanceof Error ? error.message : 'The book could not be removed.' });
+      return fail(400, { message: error instanceof Error ? error.message : 'The book could not be moved to the trash.' });
     }
-    return { removed: bookId };
+    return { trashed: bookId };
+  },
+  restore: async ({ locals, request }) => {
+    const user = requireUser(locals);
+    const bookId = String((await request.formData()).get('bookId') ?? '');
+    if (!bookId) return fail(400, { message: 'Missing book.' });
+    await restoreBook(user.id, bookId);
+    return { restored: bookId };
+  },
+  /** Permanent: rows and stored objects go together, and a render cannot be recovered. */
+  purge: async ({ locals, request }) => {
+    const user = requireUser(locals);
+    const bookId = String((await request.formData()).get('bookId') ?? '');
+    if (!bookId) return fail(400, { message: 'Missing book.' });
+    try {
+      await assertNoActiveJobs(user.id, bookId);
+      await purgeBook(user.id, bookId);
+    } catch (error) {
+      return fail(400, { message: error instanceof Error ? error.message : 'The book could not be deleted.' });
+    }
+    return { purged: bookId };
   }
 };

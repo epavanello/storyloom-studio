@@ -2,16 +2,19 @@
  * Applies the generated SQL migrations. Runs from the repository (`pnpm db:migrate`) and
  * from a deployment image alike, without needing drizzle-kit installed at runtime.
  */
-import { drizzle } from 'drizzle-orm/postgres-js';
-import { migrate } from 'drizzle-orm/postgres-js/migrator';
-import postgres from 'postgres';
-import { requireDatabaseUrl } from '../config';
+import { createClient } from '@libsql/client';
+import { drizzle } from 'drizzle-orm/libsql';
+import { migrate } from 'drizzle-orm/libsql/migrator';
+import { getConfig, requireDatabaseUrl } from '../config';
 
-const sql = postgres(requireDatabaseUrl(), { max: 1, prepare: false, onnotice: () => {} });
+const client = createClient({
+  url: requireDatabaseUrl(),
+  authToken: getConfig().databaseAuthToken || undefined
+});
 
 try {
-  await migrate(drizzle(sql), { migrationsFolder: 'drizzle' });
+  await migrate(drizzle(client), { migrationsFolder: 'drizzle' });
   console.log('[db] migrations applied');
 } finally {
-  await sql.end({ timeout: 5 });
+  client.close();
 }

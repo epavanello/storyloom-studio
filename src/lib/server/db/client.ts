@@ -1,43 +1,43 @@
-import { drizzle } from 'drizzle-orm/postgres-js';
-import postgres from 'postgres';
+import { createClient } from '@libsql/client';
+import { drizzle } from 'drizzle-orm/libsql';
 import { getConfig, requireDatabaseUrl } from '../config';
 import { schema } from './schema';
 
 type Database = ReturnType<typeof create>['db'];
 
 const stateKey = Symbol.for('storyloom.database');
-const globalState = globalThis as typeof globalThis & { [stateKey]?: { url: string; db: Database; sql: postgres.Sql } };
+const globalState = globalThis as typeof globalThis & { [stateKey]?: { signature: string; db: Database; close: () => void } };
 
-function create(url: string) {
-  const sql = postgres(url, {
-    // A serverless Postgres bills for compute time, so connections are kept few and
-    // are dropped quickly when idle: nothing in Storyloom polls the database, and an
-    // idle deployment should let the instance suspend.
-    max: getConfig().worker.mode === 'external' ? 3 : 5,
-    idle_timeout: 20,
-    max_lifetime: 60 * 30,
-    connect_timeout: 15,
-    // Neon's pooled endpoint (and pgbouncer in general) cannot serve named prepared
-    // statements across pooled connections.
-    prepare: false,
-    onnotice: () => {}
-  });
-  return { sql, db: drizzle(sql, { schema }) };
+/**
+ * One client for both shapes of deployment:
+ *
+ *   DATABASE_URL=file:./data/storyloom.db        a local SQLite file
+ *   DATABASE_URL=libsql://<db>.turso.io          a hosted database, plus DATABASE_AUTH_TOKEN
+ *
+ * A `file:` URL only works when everything runs on one machine. A web tier and a
+ * detached worker on different machines need the hosted form, because they cannot
+ * share a file.
+ */
+function create(url: string, authToken: string) {
+  const client = createClient({ url, authToken: authToken || undefined });
+  return { client, db: drizzle(client, { schema }), close: () => client.close() };
 }
 
 export function getDb() {
   const url = requireDatabaseUrl();
+  const { databaseAuthToken } = getConfig();
+  const signature = `${url}::${databaseAuthToken}`;
   const existing = globalState[stateKey];
-  if (existing && existing.url === url) return existing.db;
-  const created = create(url);
-  globalState[stateKey] = { url, ...created };
+  if (existing && existing.signature === signature) return existing.db;
+  const created = create(url, databaseAuthToken);
+  globalState[stateKey] = { signature, db: created.db, close: created.close };
   return created.db;
 }
 
-/** Closes the pool so a worker process can exit without waiting for idle sockets. */
+/** Closes the client so a worker process can exit promptly. */
 export async function closeDb() {
   const existing = globalState[stateKey];
   if (!existing) return;
   delete globalState[stateKey];
-  await existing.sql.end({ timeout: 5 });
+  existing.close();
 }

@@ -2,7 +2,7 @@ import { Worker, type Job } from 'bullmq';
 import { getConfig } from '../config';
 import { buildRunContext } from '../context';
 import { finalize, JobCancelledError, markJobActive, reportJobProgress } from '../jobs';
-import { prepareChapter, prepareRegistry } from '../orchestrator';
+import { prepareChapter, prepareRegistry, regenerateChapterAudio, regenerateCharacterReference } from '../orchestrator';
 import { getRedis } from './connection';
 import { isCancellationRequested } from './live';
 import { JOBS_QUEUE, queuePrefix, type JobPayload } from './queues';
@@ -15,7 +15,7 @@ import { JOBS_QUEUE, queuePrefix, type JobPayload } from './queues';
  * about jobs, not about BullMQ.
  */
 async function execute(job: Job<JobPayload>) {
-  const { jobId, userId, bookId, chapterId, kind } = job.data;
+  const { jobId, userId, bookId, chapterId, characterId, kind, force } = job.data;
   if (await isCancellationRequested(jobId)) {
     await finalize(jobId, 'cancelled', { error: 'Cancelled before it started' });
     return;
@@ -27,7 +27,9 @@ async function execute(job: Job<JobPayload>) {
 
   try {
     if (kind === 'registry') await prepareRegistry(context, report);
-    else await prepareChapter(context, chapterId!, report);
+    else if (kind === 'character-reference') await regenerateCharacterReference(context, characterId!, report);
+    else if (kind === 'chapter-audio') await regenerateChapterAudio(context, chapterId!, jobId, report);
+    else await prepareChapter(context, chapterId!, report, { force, generationId: jobId });
     await finalize(jobId, 'completed');
   } catch (error) {
     if (error instanceof JobCancelledError) {

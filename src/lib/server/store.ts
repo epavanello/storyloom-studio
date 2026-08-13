@@ -1,4 +1,4 @@
-import { and, asc, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, isNotNull, isNull } from 'drizzle-orm';
 import {
   ArtifactRefSchema,
   BookManifestSchema,
@@ -7,7 +7,8 @@ import {
   type BookManifest,
   type Character,
   type RenderedChapter,
-  type VoiceProfile
+  type VoiceProfile,
+  type WorldElement
 } from '../core/schemas';
 import { getDb } from './db/client';
 import { books, chapters, renderedChapters } from './db/schema';
@@ -22,6 +23,7 @@ export type BookSummary = {
   registryStatus: BookManifest['registryStatus'];
   chapterCount: number;
   characterCount: number;
+  trashedAt: string | null;
 };
 
 export function safePart(value: string) {
@@ -47,7 +49,9 @@ export async function createBook(userId: string, manifest: BookManifest) {
       sourceName: parsed.sourceName,
       registryStatus: parsed.registryStatus,
       characters: parsed.characters,
+      worldElements: parsed.worldElements,
       voices: parsed.voices,
+      visualStyle: parsed.visualStyle,
       createdAt: new Date(parsed.createdAt)
     });
     if (parsed.chapters.length) {
@@ -66,7 +70,11 @@ export async function createBook(userId: string, manifest: BookManifest) {
 
 export async function getManifest(userId: string, bookId: string): Promise<BookManifest> {
   const db = getDb();
-  const [book] = await db.select().from(books).where(and(eq(books.id, bookId), eq(books.userId, userId))).limit(1);
+  const [book] = await db
+    .select()
+    .from(books)
+    .where(and(eq(books.id, bookId), eq(books.userId, userId), isNull(books.trashedAt)))
+    .limit(1);
   if (!book) throw new BookNotFoundError(bookId);
   const rows = await db.select().from(chapters).where(eq(chapters.bookId, bookId)).orderBy(asc(chapters.order));
   return BookManifestSchema.parse({
@@ -77,7 +85,9 @@ export async function getManifest(userId: string, bookId: string): Promise<BookM
     createdAt: book.createdAt.toISOString(),
     registryStatus: book.registryStatus,
     characters: book.characters,
+    worldElements: book.worldElements,
     voices: book.voices,
+    visualStyle: book.visualStyle,
     chapters: rows.map((row) => ({
       id: row.id,
       order: row.order,
@@ -88,7 +98,7 @@ export async function getManifest(userId: string, bookId: string): Promise<BookM
   });
 }
 
-export async function listBooks(userId: string): Promise<BookSummary[]> {
+async function summaries(userId: string, trashed: boolean): Promise<BookSummary[]> {
   const db = getDb();
   const rows = await db
     .select({
@@ -96,34 +106,39 @@ export async function listBooks(userId: string): Promise<BookSummary[]> {
       title: books.title,
       sourceName: books.sourceName,
       createdAt: books.createdAt,
+      trashedAt: books.trashedAt,
       registryStatus: books.registryStatus,
       characters: books.characters,
       chapterId: chapters.id
     })
     .from(books)
     .leftJoin(chapters, eq(chapters.bookId, books.id))
-    .where(eq(books.userId, userId))
+    .where(and(eq(books.userId, userId), trashed ? isNotNull(books.trashedAt) : isNull(books.trashedAt)))
     .orderBy(desc(books.createdAt));
 
-  const summaries = new Map<string, BookSummary>();
+  const found = new Map<string, BookSummary>();
   for (const row of rows) {
-    const existing = summaries.get(row.id);
+    const existing = found.get(row.id);
     if (existing) {
       if (row.chapterId) existing.chapterCount += 1;
       continue;
     }
-    summaries.set(row.id, {
+    found.set(row.id, {
       id: row.id,
       title: row.title,
       sourceName: row.sourceName,
       createdAt: row.createdAt.toISOString(),
+      trashedAt: row.trashedAt?.toISOString() ?? null,
       registryStatus: row.registryStatus,
       chapterCount: row.chapterId ? 1 : 0,
       characterCount: row.characters.length
     });
   }
-  return [...summaries.values()];
+  return [...found.values()];
 }
+
+export const listBooks = (userId: string) => summaries(userId, false);
+export const listTrashedBooks = (userId: string) => summaries(userId, true);
 
 /** Confirms ownership without paying for the chapter text. */
 export async function assertBookOwner(userId: string, bookId: string) {
@@ -131,7 +146,7 @@ export async function assertBookOwner(userId: string, bookId: string) {
   const [book] = await db
     .select({ id: books.id, registryStatus: books.registryStatus })
     .from(books)
-    .where(and(eq(books.id, bookId), eq(books.userId, userId)))
+    .where(and(eq(books.id, bookId), eq(books.userId, userId), isNull(books.trashedAt)))
     .limit(1);
   if (!book) throw new BookNotFoundError(bookId);
   return book;
@@ -143,7 +158,9 @@ export async function assertBookOwner(userId: string, bookId: string) {
  */
 export async function saveBookRegistry(bookId: string, patch: {
   characters?: Character[];
+  worldElements?: WorldElement[];
   voices?: VoiceProfile[];
+  visualStyle?: BookManifest['visualStyle'];
   registryStatus?: BookManifest['registryStatus'];
 }) {
   const db = getDb();
@@ -171,23 +188,37 @@ export async function getRenderedChapter(bookId: string, chapterId: string): Pro
     .limit(1);
   if (!row) return null;
   const parsed = RenderedChapterSchema.safeParse(row.data);
-  // A stored render from an older schema is reported as absent rather than crashing the
-  // reader; regenerating produces a current one.
-  return parsed.success ? parsed.data : null;
+  // Absent and incompatible are different failures: a stored render that no longer
+  // matches the schema must not be silently reported as "not generated yet".
+  if (!parsed.success) throw new Error(`Stored render ${chapterId} is incompatible or damaged`, { cause: parsed.error });
+  return parsed.data;
 }
 
-export async function listRenderedChapterIds(bookId: string) {
+export async function deleteRenderedChapter(bookId: string, chapterId: string) {
   const db = getDb();
-  const rows = await db
-    .select({ chapterId: renderedChapters.chapterId })
-    .from(renderedChapters)
-    .where(eq(renderedChapters.bookId, bookId));
-  return rows.map((row) => row.chapterId);
+  await db.delete(renderedChapters).where(and(eq(renderedChapters.bookId, bookId), eq(renderedChapters.chapterId, chapterId)));
 }
 
-export async function deleteBook(userId: string, bookId: string) {
+/**
+ * Recoverable deletion. The book leaves the library but its rows and artifacts stay,
+ * because a chapter render costs real inference time and money.
+ */
+export async function trashBook(userId: string, bookId: string) {
   await assertBookOwner(userId, bookId);
   const db = getDb();
+  await db.update(books).set({ trashedAt: new Date() }).where(and(eq(books.id, bookId), eq(books.userId, userId)));
+}
+
+export async function restoreBook(userId: string, bookId: string) {
+  const db = getDb();
+  await db.update(books).set({ trashedAt: null }).where(and(eq(books.id, bookId), eq(books.userId, userId)));
+}
+
+/** Permanent removal: rows and stored objects together. */
+export async function purgeBook(userId: string, bookId: string) {
+  const db = getDb();
+  const [book] = await db.select({ id: books.id }).from(books).where(and(eq(books.id, bookId), eq(books.userId, userId))).limit(1);
+  if (!book) throw new BookNotFoundError(bookId);
   // Objects go first: a failure here leaves a readable book rather than dangling rows
   // pointing at bytes that no longer exist.
   await getStorage().removePrefix(bookPrefix(bookId));

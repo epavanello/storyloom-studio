@@ -7,9 +7,11 @@ It runs as a deployable service where **the web tier and the machine doing infer
 ## Architecture
 
 ```text
-browser ──▶ SvelteKit web tier ──▶ Postgres  (books, chapters, renders, job records)
+browser ──▶ SvelteKit web tier ──▶ SQLite   (books, chapters, renders, job records)
+                    │                          local file, or Turso when distributed
                     │             ──▶ Redis    (job queue + live progress)
-                    │             ──▶ S3 / R2  (audio, images, reference sheets)
+                    │             ──▶ storage  (audio, images, reference sheets)
+                    │                          local filesystem, or S3/R2
                     ▼
              one BullMQ queue
                     ▼
@@ -33,18 +35,29 @@ The orchestrator makes no creative decisions. The chapter planner reads the comp
 
 Switching from local to cloud later is a configuration change, not a code change: point `STORYLOOM_MODE` and the capability policies at the cloud and let the web process run the worker inline.
 
-A worker holds direct Redis and Postgres credentials, so it can read every account's data. Run it only on a machine you operate.
+A worker holds direct database and Redis credentials, so it can read every account's data. Run it only on a machine you operate.
+
+### Swappable infrastructure
+
+Both stateful pieces sit behind one interface, so the same code serves a laptop and a hosted deployment:
+
+| | one machine | distributed |
+| --- | --- | --- |
+| Database | `DATABASE_URL=file:./data/storyloom.db` | `DATABASE_URL=libsql://…turso.io` + `DATABASE_AUTH_TOKEN` |
+| Artifacts | `STORAGE_DRIVER=fs` | `STORAGE_DRIVER=s3` + bucket credentials |
+
+A `file:` database only works when everything runs in one place — two machines cannot share a SQLite file. Redis is required either way; the queue is what lets a job outlive the request that created it.
 
 ### Cost shape
 
-Nothing polls Postgres. Live per-step job progress is written to Redis, the browser polls Redis-backed endpoints, and Postgres only sees state transitions — a job accepted, started, finished — plus the durable artifacts of a render. Sessions are cached in a signed cookie for a minute. A serverless Postgres is therefore free to suspend whenever no generation is running, which is what keeps a Neon deployment inside a small compute budget.
+Nothing polls the database. Live per-step job progress is written to Redis, the browser polls Redis-backed endpoints, and the database only sees state transitions — a job accepted, started, finished — plus the durable result of a render. Sessions are cached in a signed cookie for a minute. That keeps a hosted database's request count proportional to real work rather than to open browser tabs.
 
 ## Quick start
 
 ```bash
-cp .env.storyloom-local.example .env
+cp .env.storyloom-hybrid.example .env
 # fill in STORYLOOM_ENCRYPTION_KEY and BETTER_AUTH_SECRET: openssl rand -base64 32
-docker compose -f docker-compose.dev.yml up -d
+docker compose -f docker-compose.dev.yml up -d   # Redis; the database is a local file
 pnpm install
 pnpm db:migrate
 pnpm dev
@@ -54,19 +67,31 @@ Open `http://localhost:4173`, create an account, and either import a book or ope
 
 ## Deployment topologies
 
-**Everything on one machine.** `STORAGE_DRIVER=fs`, `docker compose -f docker-compose.dev.yml up -d` for Postgres and Redis, `STORYLOOM_WORKER_MODE=inline`. This is development and single-machine self-hosting. See `.env.storyloom-local.example`.
+**1. Everything on one machine** — `.env.storyloom-hybrid.example`
 
-**Cheap box for the app, your Mac for inference.** The web deployment runs with `STORYLOOM_MODE=local` and `STORYLOOM_WORKER_MODE=off`, so it only accepts and reports jobs. Your Mac runs the worker against the same Postgres, Redis and bucket:
+The app, a SQLite file, artifacts on disk, and hybrid inference: the language model on OpenRouter, speech, alignment and images on this machine. Only Redis has to be running.
 
 ```bash
-STORYLOOM_MODE=local \
-DATABASE_URL=… REDIS_URL=… S3_BUCKET=… \
+docker compose -f docker-compose.dev.yml up -d   # or: brew services start redis
+pnpm db:migrate && pnpm dev:hybrid
+```
+
+`.env.storyloom-local.example` is the same shape with the language model on LM Studio too, so nothing at all leaves the machine.
+
+**2. Full SaaS** — `.env.storyloom-cloud.example`
+
+One small always-on box, Turso for the database, R2 for artifacts, all inference through OpenRouter with each account's own key. `STORYLOOM_WORKER_MODE=inline`, so the web process drains its own queue and no second machine is involved.
+
+**3. Deployed app, your own hardware doing the inference** — `.env.worker.example`
+
+The web deployment points at Turso and R2 with `STORYLOOM_WORKER_MODE=off`, so it only accepts and reports jobs. Your machine drains the queue against the same database and bucket:
+
+```bash
+set -a && . ./.env.worker && set +a
 pnpm worker
 ```
 
-Postgres on Neon, Redis managed, artifacts on Cloudflare R2 so both sides read the same objects. See `.env.worker.example`. When the Mac is off, jobs queue up and both the book page and `/jobs` say that no worker is connected.
-
-**One cheap box, cloud inference.** `STORYLOOM_MODE=cloud`, `STORYLOOM_WORKER_MODE=inline`: the web process drains its own queue and no second machine is involved. See `.env.storyloom-cloud.example`.
+Media generated here is written to the shared bucket, so the deployed app serves it immediately. When your machine is off, jobs queue up and both the book page and `/jobs` report that no worker is connected — nothing hangs silently. This is also the migration path: switching to topology 2 later means changing the policies and turning the inline worker back on, not changing code.
 
 ## Configuration
 
@@ -76,7 +101,9 @@ Postgres on Neon, Redis managed, artifacts on Cloudflare R2 so both sides read t
 | --- | --- |
 | `STORYLOOM_MODE` | `mock`, `local`, `cloud`, `hybrid` — how this deployment executes every job |
 | `STORYLOOM_WORKER_MODE` | `inline` (worker inside the web process), `external`, `off` |
-| `DATABASE_URL` / `REDIS_URL` | Shared by the web tier and the worker |
+| `DATABASE_URL` | `file:…` for one machine, `libsql://…turso.io` when distributed |
+| `DATABASE_AUTH_TOKEN` | Required for a `libsql://` URL |
+| `REDIS_URL` | Shared by the web tier and the worker |
 | `STORYLOOM_QUEUE_PREFIX` | Namespaces Redis keys; must match across a deployment's web tier and workers |
 | `STORAGE_DRIVER` | `fs` or `s3`; defaults to `s3` when `S3_BUCKET` is set |
 | `STORYLOOM_ENCRYPTION_KEY` | Encrypts stored provider keys. Changing it makes them unreadable |
@@ -111,7 +138,7 @@ pnpm build && pnpm start
 
 ## Verified
 
-Exercised end to end in `mock` mode against real Postgres and Redis, through the HTTP API with real sessions:
+Exercised end to end in `mock` mode against a real SQLite database and Redis, through the HTTP API with real sessions:
 
 - account creation, sign-in and rejection of anonymous requests;
 - book import, chapter render, and artifacts written and read back;

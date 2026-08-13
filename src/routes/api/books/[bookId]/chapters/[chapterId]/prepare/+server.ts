@@ -3,11 +3,16 @@ import type { RequestHandler } from './$types';
 import { startGenerationJob } from '$lib/server/jobs';
 import { requireUser } from '$lib/server/session';
 
-export const POST: RequestHandler = async ({ locals, params }) => {
+export const POST: RequestHandler = async ({ locals, params, url }) => {
   const user = requireUser(locals);
   try {
     return json(
-      await startGenerationJob(user.id, { kind: 'chapter', bookId: params.bookId, chapterId: params.chapterId }),
+      await startGenerationJob(user.id, {
+        kind: 'chapter',
+        bookId: params.bookId,
+        chapterId: params.chapterId,
+        force: url.searchParams.get('force') === 'true'
+      }),
       { status: 202 }
     );
   } catch (error) {

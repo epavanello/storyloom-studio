@@ -24,7 +24,7 @@ function create() {
     secret: config.auth.secret,
     baseURL: config.publicUrl,
     trustedOrigins: [config.publicUrl, ...config.auth.trustedOrigins],
-    database: drizzleAdapter(getDb(), { provider: 'pg', schema }),
+    database: drizzleAdapter(getDb(), { provider: 'sqlite', schema }),
     emailAndPassword: {
       enabled: true,
       disableSignUp: !config.auth.allowSignUp,

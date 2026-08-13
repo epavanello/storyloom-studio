@@ -12,7 +12,22 @@ export const ArtifactRefSchema = z.object({
   mimeType: z.string(),
   provider: z.string(),
   model: z.string(),
-  createdAt: z.string()
+  createdAt: z.string(),
+  generationId: z.string().optional(),
+  voiceId: z.string().optional(),
+  language: z.string().optional(),
+  instructions: z.string().optional(),
+  styleId: z.string().optional()
+});
+
+export const DEFAULT_VISUAL_STYLE = {
+  id: 'arctic-illustrated-v1',
+  prompt: 'Hand-drawn animated storybook illustration with clean inked contours, textured digital gouache, expressive but grounded anatomy, cinematic lighting, and a restrained Arctic palette. Clearly illustrated, never photorealistic and never a 3D render.'
+} as const;
+
+export const VisualStyleSchema = z.object({
+  id: z.string(),
+  prompt: z.string()
 });
 
 export const ChapterSchema = z.object({
@@ -30,7 +45,22 @@ export const CharacterSchema = z.object({
   physicalDescription: z.string(),
   personality: z.string(),
   narrativeRole: z.string(),
+  voiceGender: z.enum(['female', 'male', 'neutral', 'unknown']).default('unknown'),
+  voiceDescription: z.string().default('Voice qualities are not established'),
   firstAppearanceChapterId: z.string(),
+  referenceImages: z.array(ArtifactRefSchema).default([])
+});
+
+export const WorldElementSchema = z.object({
+  id: z.string(),
+  canonicalName: z.string(),
+  aliases: z.array(z.string()).default([]),
+  kind: z.enum(['location', 'object']),
+  visualDescription: z.string(),
+  continuityRole: z.string(),
+  textualEvidence: z.string(),
+  firstAppearanceChapterId: z.string(),
+  referencePriority: z.enum(['essential', 'useful', 'none']).default('none'),
   referenceImages: z.array(ArtifactRefSchema).default([])
 });
 
@@ -39,6 +69,10 @@ export const VoiceProfileSchema = z.object({
   voiceId: z.string(),
   seed: z.number().int(),
   description: z.string(),
+  gender: z.enum(['female', 'male', 'neutral', 'unknown']).default('unknown'),
+  language: z.string().default('it'),
+  provider: z.string().default('unassigned'),
+  model: z.string().default('unassigned'),
   referenceAudioPath: z.string().optional()
 });
 
@@ -50,7 +84,9 @@ export const BookManifestSchema = z.object({
   createdAt: z.string(),
   chapters: z.array(ChapterSchema),
   characters: z.array(CharacterSchema).default([]),
+  worldElements: z.array(WorldElementSchema).default([]),
   voices: z.array(VoiceProfileSchema).default([]),
+  visualStyle: VisualStyleSchema.default(DEFAULT_VISUAL_STYLE),
   registryStatus: z.enum(['pending', 'processing', 'ready', 'failed']).default('pending')
 });
 
@@ -76,6 +112,7 @@ export const VisualCueSchema = z.object({
   utteranceId: z.string(),
   prompt: z.string(),
   characterIds: z.array(z.string()),
+  worldElementIds: z.array(z.string()).default([]),
   shot: z.string(),
   mood: z.string()
 });
@@ -106,6 +143,7 @@ export const WordTimingSchema = z.object({
 export const RenderedUtteranceSchema = z.object({
   utterance: UtteranceSchema,
   audio: ArtifactRefSchema,
+  voice: VoiceProfileSchema.optional(),
   startMs: z.number().nonnegative(),
   durationMs: z.number().positive(),
   words: z.array(WordTimingSchema),
@@ -137,14 +175,17 @@ export const GenerationJobStepSchema = z.object({
   detail: z.string().optional()
 });
 
+export const JobKindSchema = z.enum(['registry', 'chapter', 'chapter-audio', 'character-reference']);
 export const JobStatusSchema = z.enum(['queued', 'active', 'completed', 'failed', 'cancelled']);
 
 export const GenerationJobSchema = z.object({
   schemaVersion: z.literal(1),
   id: z.string(),
-  kind: z.enum(['registry', 'chapter']),
+  kind: JobKindSchema,
   bookId: z.string(),
   chapterId: z.string().nullable().default(null),
+  characterId: z.string().nullable().default(null),
+  force: z.boolean().default(false),
   userId: z.string(),
   /** The runtime profile of the deployment that accepted the job. */
   mode: z.enum(['mock', 'local', 'cloud', 'hybrid']),
@@ -168,7 +209,7 @@ export const QueueSnapshotSchema = z.object({
   delayed: z.number().int().nonnegative(),
   completed: z.number().int().nonnegative(),
   failed: z.number().int().nonnegative(),
-  /** False when no worker has been seen on this queue, i.e. work would sit forever. */
+  /** False when no worker has been seen, i.e. work would sit forever. */
   hasWorker: z.boolean()
 });
 
@@ -179,7 +220,9 @@ export type Character = z.infer<typeof CharacterSchema>;
 export type ChapterPlan = z.infer<typeof ChapterPlanSchema>;
 export type RenderedChapter = z.infer<typeof RenderedChapterSchema>;
 export type VoiceProfile = z.infer<typeof VoiceProfileSchema>;
+export type WorldElement = z.infer<typeof WorldElementSchema>;
 export type GenerationJob = z.infer<typeof GenerationJobSchema>;
 export type GenerationJobStep = z.infer<typeof GenerationJobStepSchema>;
+export type JobKind = z.infer<typeof JobKindSchema>;
 export type JobStatus = z.infer<typeof JobStatusSchema>;
 export type QueueSnapshot = z.infer<typeof QueueSnapshotSchema>;

@@ -1,28 +1,14 @@
-# Local Postgres and Redis for development and for the integration test suite.
-# A hosted deployment uses Neon and a managed Redis instead of these.
+# Redis for the job queue. The database does not appear here: a single-machine
+# deployment uses a local SQLite file, and a distributed one uses Turso.
 #
 #   docker compose -f docker-compose.dev.yml up -d
 #   pnpm db:migrate
+#
+# On a Mac, `brew install redis && brew services start redis` works just as well.
 services:
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: storyloom
-      POSTGRES_PASSWORD: storyloom
-      POSTGRES_DB: storyloom
-    ports:
-      - '5432:5432'
-    volumes:
-      - storyloom-postgres:/var/lib/postgresql/data
-    healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U storyloom']
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
   redis:
     image: redis:7-alpine
-    # Job state is durable in Postgres, but persisting the queue means a restart
+    # Job state is durable in the database, but persisting the queue means a restart
     # does not silently drop work that was already accepted.
     command: ['redis-server', '--appendonly', 'yes']
     ports:
@@ -36,5 +22,4 @@ services:
       retries: 10
 
 volumes:
-  storyloom-postgres:
   storyloom-redis:

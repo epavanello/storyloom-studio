@@ -2,9 +2,10 @@ import { getConfig } from '../config';
 import type { RunContext } from '../context';
 import { AiSdkStructuredProvider, OpenRouterStructuredProvider } from './text';
 import { MockImageProvider, MockSpeechProvider, MockStructuredProvider, ProportionalAligner } from './mock';
-import { OpenAiCompatibleImageProvider, OpenAiCompatibleSpeechProvider, OpenRouterImageProvider, OpenRouterSpeechProvider } from './media';
+import { ChatterboxSpeechProvider, OpenAiCompatibleImageProvider, OpenAiCompatibleSpeechProvider, OpenRouterImageProvider, OpenRouterSpeechProvider } from './media';
 import { QwenForcedAlignerProvider } from './alignment';
 import type { AlignmentProvider, ImageProvider, ImageRequest, SpeechProvider, SpeechRequest, StructuredRequest, StructuredTextProvider } from './contracts';
+import { remapVoice } from '../voices';
 
 class FallbackTextProvider implements StructuredTextProvider {
   id: string; model: string;
@@ -14,8 +15,17 @@ class FallbackTextProvider implements StructuredTextProvider {
 
 class FallbackSpeechProvider implements SpeechProvider {
   id: string; model: string;
-  constructor(private primary: SpeechProvider, private fallback: SpeechProvider) { this.id = `${primary.id}->${fallback.id}`; this.model = primary.model; }
-  async synthesize(request: SpeechRequest) { try { return await this.primary.synthesize(request); } catch { return this.fallback.synthesize(request); } }
+  readonly voiceOptions: SpeechProvider['voiceOptions'];
+  constructor(private primary: SpeechProvider, private fallback: SpeechProvider) {
+    this.id = `${primary.id}->${fallback.id}`; this.model = primary.model; this.voiceOptions = primary.voiceOptions;
+  }
+  async synthesize(request: SpeechRequest) {
+    try { return await this.primary.synthesize(request); }
+    catch {
+      const voice = remapVoice(request.voice, this.fallback.voiceOptions, this.fallback.id, this.fallback.model);
+      return this.fallback.synthesize({ ...request, voice });
+    }
+  }
 }
 
 class FallbackImageProvider implements ImageProvider {
@@ -50,7 +60,9 @@ export function providers(context: RunContext) {
     reasoningEffort: 'none'
   });
   const cloudText = new OpenRouterStructuredProvider(config.openRouterLlmModel, cloudKey);
-  const localSpeech = new OpenAiCompatibleSpeechProvider('local-tts', config.localTtsModel, config.localTtsBaseUrl, '', 'wav');
+  const localSpeech = config.localTtsEngine === 'chatterbox-v3'
+    ? new ChatterboxSpeechProvider(config.localTtsBaseUrl)
+    : new OpenAiCompatibleSpeechProvider('local-tts', config.localTtsModel, config.localTtsBaseUrl, '', 'wav');
   const cloudSpeech = new OpenRouterSpeechProvider(config.openRouterTtsModel, cloudKey, config.openRouterTtsVoices);
   const localImage = new OpenAiCompatibleImageProvider('local-image', config.localImageModel, config.localImageBaseUrl, '');
   const cloudImage = new OpenRouterImageProvider(config.openRouterImageModel, cloudKey);

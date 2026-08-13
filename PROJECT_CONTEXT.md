@@ -50,9 +50,15 @@ Accanto ai personaggi, l'evoluzione naturale del progetto prevede un World/Conti
 
 Il Voice Registry resta separato dal Character Registry. Il seed è utile ma non sufficiente a garantire una voce stabile: quando disponibili vanno conservati anche modello, configurazione, reference audio o embedding, stile di parlato e impostazioni espressive.
 
+Nell'implementazione corrente ogni profilo vocale conserva anche genere vocale richiesto, lingua, provider, modello e voice ID. Il narratore è un profilo esplicito. Il casting usa soltanto voci dichiarate dal provider e privilegia una voce distinta e compatibile con il genere testualmente supportato; se il catalogo non basta, la limitazione non deve essere nascosta.
+
 ### Reference visive
 
 Prima di generare le scene, il sistema crea per ogni personaggio principale una piccola scheda visiva coerente: ritratto frontale, tre quarti, profilo o figura intera secondo necessità.
+
+Per ridurre testo spurio, collage e identità multiple, la reference corrente richiede una sola raffigurazione completa del soggetto su sfondo neutro, senza etichette, pannelli o pose duplicate. Un World Registry minimale può conservare fino a otto luoghi o oggetti davvero centrali; ogni elemento che supera questa selezione riceve una reference coerente, mentre elementi incidentali e generici vengono esclusi prima della generazione.
+
+L'implementazione corrente applica uno stile illustrato da libro animato, versionato e comune a reference e scene, sia nel profilo locale sia in quello cloud. Il planner deve scegliere un numero limitato ma non triviale di momenti visivi distribuiti lungo il capitolo. La UI consente inoltre di rigenerare una singola reference personaggio, rigenerare forzatamente un capitolo e spostare un libro completo nel cestino dati recuperabile.
 
 Ogni immagine di scena deve ricevere soltanto le reference dei personaggi effettivamente presenti, associate in modo esplicito ai rispettivi ruoli nella composizione. Lo stile grafico costituisce una reference separata dall'identità dei personaggi.
 
@@ -175,7 +181,7 @@ Il perimetro iniziale escludeva esplicitamente multiutenza, database e infrastru
 
 Ne discendono quattro elementi strutturali:
 
-- **Postgres** come stato condiviso fra web tier e worker. Nulla lo interroga a intervalli: il progresso vivo dei job sta in Redis e il database vede solo le transizioni durevoli, così un Postgres serverless resta sospeso quando non si genera nulla.
+- **Un database SQLite via libSQL** come stato condiviso fra web tier e worker: un file locale quando tutto gira su una macchina, Turso quando web e calcolo stanno su macchine diverse. Nulla lo interroga a intervalli: il progresso vivo dei job sta in Redis e il database vede solo le transizioni durevoli.
 - **Redis con BullMQ** come coda, una sola. Un deploy è cloud **oppure** locale, mai entrambi: `STORYLOOM_MODE` lo decide e ogni job di quel deploy gira così. Ciò che è parametrico è quale processo drena la coda — dentro il processo web, un processo separato sulla stessa macchina, o un processo su un'altra macchina.
 - **Object storage S3-compatibile** per audio, immagini e schede identità, con lettura autorizzata contro la proprietà del libro.
 - **Sessioni e segregazione per utente**, con chiavi provider portate dall'utente e cifrate a riposo.
@@ -221,7 +227,7 @@ Il repository contiene una verticale dimostrativa SvelteKit con:
 - Character e Voice Registry;
 - pianificazione del capitolo;
 - orchestratore e routing per capacità;
-- persistenza su Postgres e artifact su object storage (driver filesystem o S3);
+- persistenza su SQLite/libSQL e artifact su object storage, entrambi dietro un driver (file locale o servizio gestito);
 - coda BullMQ su Redis, con worker avviabile dentro il processo web o come processo separato;
 - account, sessioni e segregazione dei dati per utente;
 - player con utterance sequenziali e cambi scena;
