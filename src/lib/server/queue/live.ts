@@ -1,4 +1,5 @@
 import { GenerationJobSchema, type GenerationJob } from '../../core/schemas';
+import { getConfig } from '../config';
 import { getRedis } from './connection';
 
 /**
@@ -12,9 +13,11 @@ import { getRedis } from './connection';
 
 const RETENTION_SECONDS = 24 * 60 * 60;
 
-const jobKey = (jobId: string) => `sl:job:${jobId}`;
-const indexKey = (userId: string) => `sl:user:${userId}:jobs`;
-const cancelKey = (jobId: string) => `sl:job:${jobId}:cancel`;
+// Namespaced with the same prefix as the queues, so one Redis can serve several
+// deployments without their live job state overlapping.
+const jobKey = (jobId: string) => `${getConfig().queuePrefix}:job:${jobId}`;
+const indexKey = (userId: string) => `${getConfig().queuePrefix}:user:${userId}:jobs`;
+const cancelKey = (jobId: string) => `${getConfig().queuePrefix}:job:${jobId}:cancel`;
 
 export async function publishJobState(job: GenerationJob) {
   const redis = getRedis();

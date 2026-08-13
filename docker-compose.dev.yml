@@ -1,0 +1,40 @@
+# Local Postgres and Redis for development and for the integration test suite.
+# A hosted deployment uses Neon and a managed Redis instead of these.
+#
+#   docker compose -f docker-compose.dev.yml up -d
+#   pnpm db:migrate
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: storyloom
+      POSTGRES_PASSWORD: storyloom
+      POSTGRES_DB: storyloom
+    ports:
+      - '5432:5432'
+    volumes:
+      - storyloom-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U storyloom']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    # Job state is durable in Postgres, but persisting the queue means a restart
+    # does not silently drop work that was already accepted.
+    command: ['redis-server', '--appendonly', 'yes']
+    ports:
+      - '6379:6379'
+    volumes:
+      - storyloom-redis:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  storyloom-postgres:
+  storyloom-redis:

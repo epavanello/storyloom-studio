@@ -1,5 +1,6 @@
 import { Queue } from 'bullmq';
 import type { QueueSnapshot } from '../../core/schemas';
+import { getConfig } from '../config';
 import { getRedis } from './connection';
 import { targetOfQueue } from './names';
 
@@ -16,11 +17,18 @@ const stateKey = Symbol.for('storyloom.queues');
 const globalState = globalThis as typeof globalThis & { [stateKey]?: Map<string, Queue<JobPayload>> };
 const queues = globalState[stateKey] ??= new Map<string, Queue<JobPayload>>();
 
+/** Namespaces BullMQ's own Redis keys, so one Redis can serve several deployments. */
+export function queuePrefix() {
+  return getConfig().queuePrefix;
+}
+
 export function getQueue(name: string) {
-  const existing = queues.get(name);
+  const cacheKey = `${queuePrefix()}/${name}`;
+  const existing = queues.get(cacheKey);
   if (existing) return existing;
   const queue = new Queue<JobPayload>(name, {
     connection: getRedis(),
+    prefix: queuePrefix(),
     defaultJobOptions: {
       // Heavy generation is expensive and partially resumable from cached artifacts, so
       // a failed job is surfaced to the user instead of being retried blindly.
@@ -29,7 +37,7 @@ export function getQueue(name: string) {
       removeOnFail: { age: 7 * 24 * 60 * 60, count: 200 }
     }
   });
-  queues.set(name, queue);
+  queues.set(cacheKey, queue);
   return queue;
 }
 

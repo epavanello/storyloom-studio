@@ -25,6 +25,12 @@ export const AppConfigSchema = z.object({
   publicUrl: z.string(),
   databaseUrl: z.string(),
   redisUrl: z.string(),
+  /**
+   * Namespaces every queue and live-state key in Redis. Two deployments — or a dev
+   * server and a test run — can share one Redis instance without draining each
+   * other's queues.
+   */
+  queuePrefix: z.string().min(1),
   encryptionKey: z.string(),
   storage: z.object({
     driver: z.enum(['fs', 's3']),
@@ -106,6 +112,7 @@ export function getConfig(): AppConfig {
     publicUrl: (env.STORYLOOM_PUBLIC_URL ?? 'http://localhost:4173').replace(/\/$/, ''),
     databaseUrl: env.DATABASE_URL ?? '',
     redisUrl: env.REDIS_URL ?? '',
+    queuePrefix: env.STORYLOOM_QUEUE_PREFIX || 'storyloom',
     encryptionKey: env.STORYLOOM_ENCRYPTION_KEY ?? '',
     storage: {
       driver: env.STORAGE_DRIVER ?? (env.S3_BUCKET ? 's3' : 'fs'),

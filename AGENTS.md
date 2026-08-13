@@ -86,6 +86,17 @@ Do not optimize cost or throughput by silently weakening a higher-priority requi
 - Never invent an unsupported physical trait and persist it as canonical fact.
 - Never merge characters solely because names look similar.
 
+### Keep tenants separated
+
+Storyloom is a multi-account service. Books, chapters, renders, artifacts, jobs and provider keys belong to exactly one account.
+
+- Every read and write of user data must be scoped by owner. Do not add a query that takes only a book, chapter or job ID from a request and trusts it.
+- Authorize artifact reads against book ownership. Generated media is user data and must never be served from a public bucket URL.
+- An unauthorized request must be indistinguishable from a missing resource, so that identifiers cannot be probed.
+- Provider keys are per account, sealed at rest, decrypted only while that account's job runs, and never returned to the browser, written into an artifact, or logged.
+- A job may only be routed to a queue its owner controls. A per-user local queue must never receive another account's work.
+- Direct Redis and Postgres credentials imply full access to every account. Only give them to a process whose operator is entitled to that.
+
 ### Generate on demand
 
 - Analyze enough of the book to establish chapters, identities, and continuity.
@@ -164,10 +175,13 @@ Changes may improve this sequence, but they must preserve the separation of resp
 
 ### `src/lib/server`
 
-- Contains ingestion, orchestration, storage, runtime coordination, and provider implementations.
+- Contains ingestion, orchestration, persistence, queueing, runtime coordination, and provider implementations.
 - Provider-specific payloads must remain behind Storyloom-owned contracts.
-- Environment parsing belongs in validated configuration code.
+- Environment parsing belongs in validated configuration code, reading `process.env`.
 - Server modules must not leak secrets into client-side data.
+- **Must not import SvelteKit aliases or modules** (`$lib/*`, `$env/*`, `@sveltejs/kit`). The standalone worker imports this tree directly and runs outside SvelteKit; use relative imports. `src/lib/server/session.ts` is the deliberate exception and is only reachable from routes.
+- `db/` owns the Drizzle schema, the connection and the migrations. `storage/` owns the object-storage drivers. `queue/` owns queue naming, live job state and the worker runtime.
+- Nothing may poll Postgres. Frequent or periodic state belongs in Redis; the database sees durable transitions only.
 
 ### `src/lib/server/providers`
 
@@ -183,9 +197,11 @@ Changes may improve this sequence, but they must preserve the separation of resp
 - Do not put core planning, routing, registry reconciliation, or storage rules in Svelte components.
 - API routes must validate identifiers and inputs and return actionable errors without exposing secrets or internal paths.
 
-### `data`
+### Artifact storage
 
-- Contains generated or imported local artifacts and is not source code.
+- Binary artifacts live in object storage behind `src/lib/server/storage`, addressed by a key of the form `books/<bookId>/<path>`. `data/` is only the local filesystem driver's root and is not source code.
+- Read artifact bytes through the storage layer by key. Do not parse an application URL or build a filesystem path to reach them.
+- Reject traversal, absolute and empty key segments before a key reaches a driver.
 - Do not commit user books, generated voices, reference images, or rendered media by default.
 - Tests should use isolated temporary directories or explicit small fixtures, not mutate the user's working data.
 - Never delete material user data without explicit authorization and exact target verification.
@@ -290,7 +306,8 @@ Changes may improve this sequence, but they must preserve the separation of resp
 - Prefer pure validation and transformation functions that can be tested without models.
 - Use clear domain names such as `ChapterPlan`, `VoiceProfile`, `VisualCue`, and `ArtifactRef`.
 - Avoid broad refactors while implementing a focused task unless the current design genuinely blocks correctness.
-- Do not add a database, queue, container platform, or distributed workflow engine without a demonstrated requirement and explicit scope expansion.
+- Postgres, Redis, BullMQ and S3-compatible storage are the deliberate infrastructure of the deployable service. Anything beyond them — another datastore, a container platform, a distributed workflow engine — still needs a demonstrated requirement and explicit scope expansion.
+- Keep the queue a queue. Job handlers map a queue entry onto the orchestrator; they do not acquire creative or routing decisions of their own.
 - Preserve existing formatting and conventions unless the task includes a formatting migration.
 - Add comments for non-obvious invariants and provider quirks, not for code that explains itself.
 - Avoid `latest` dependency ranges for foundational build tooling. Pin compatible versions intentionally and update the lockfile consistently.
@@ -305,9 +322,9 @@ Every change should be verified in proportion to its risk.
 Use the scripts defined in `package.json`:
 
 ```bash
-npm test
-npm run check
-npm run build
+pnpm test
+pnpm check
+pnpm build
 ```
 
 If the repository standardizes on another invocation later, update this section and the README together. Do not report the project as healthy if one required command fails; explain whether the failure is introduced, pre-existing, or environment-specific.
@@ -319,12 +336,16 @@ If the repository standardizes on another invocation later, update this section 
 - **Registry:** aliases, repeated mentions, false positives, conflicting candidates, incremental updates.
 - **Planner validation:** exact text coverage, ordering, offsets, known speaker IDs, valid cue anchors.
 - **Routing:** all execution policies, absent credentials, unsupported capabilities, explicit fallback behavior.
-- **Storage:** path traversal, interrupted writes where relevant, cache hit/miss, version invalidation.
+- **Storage:** path traversal, interrupted writes where relevant, cache hit/miss, version invalidation, key round-trips across drivers.
+- **Tenancy:** a second account must not be able to read, queue against, cancel or delete the first account's books, artifacts and jobs.
+- **Queue:** routing per execution target, duplicate suppression, cancellation of queued and running work, and a queue with no worker being reported rather than silently stalling.
 - **Audio/timeline:** duration handling, exact versus approximate alignment, seeking, utterance boundaries.
 - **Images:** reference mapping, multi-character requirements, missing references, regeneration isolation.
 - **UI/API:** successful state, long-running state, partial failure, retry, cached result, accessible controls.
 
 Use deterministic mocks for unit tests. Real-provider tests must be opt-in, clearly named, protected from accidental cost, and must never require secrets for the default test suite.
+
+Tests that need Postgres and Redis are named `*.integration.test.ts` and skip themselves unless `DATABASE_URL` and `REDIS_URL` are set, so `pnpm test` runs with no services. Start them with `docker compose -f docker-compose.dev.yml up -d`, then `pnpm db:migrate`. An integration test must clean up the rows and objects it created.
 
 ### End-to-end validation
 
@@ -457,18 +478,19 @@ When a safe local mock or reversible implementation can proceed without resolvin
 - Hiding provider fallbacks.
 - Loading LLM, TTS, and image models concurrently on unified memory without coordination.
 - Considering compilation proof that local/cloud media generation works.
-- Building generalized infrastructure before one chapter is qualitatively convincing.
+- Building generalized infrastructure beyond the deployment the user asked for. The database, queue and object storage exist because a multi-account service with a detached worker requires them; that is not a licence to generalize further.
+- Scoping a query by an ID from the request without also scoping it by owner.
+- Polling a serverless database, or writing per-step progress to it.
+- Handing Redis or Postgres credentials to a machine whose operator may not read every account's data.
 
 ## Current strategic next step
 
-Unless the user gives a different priority, work toward the smallest reliable local vertical:
+The service now has accounts, a shared database, a distributed job queue and object storage. Unless the user gives a different priority:
 
-1. stabilize dependencies and make tests, type-check, and build pass;
-2. select a representative chapter and explicit quality criteria;
-3. validate local text planning and registry extraction;
-4. integrate real local TTS and forced alignment;
-5. validate reference-conditioned scene generation;
-6. complete and evaluate one chapter end to end;
-7. only then harden hybrid routing, cache fingerprints, and broader book coverage.
+1. re-validate the real local vertical end to end through the queue, since providers now read and write artifacts through object storage rather than the filesystem;
+2. add quotas or rate limits before opening registration, because nothing currently bounds queued work;
+3. wire a mailer so email verification and password reset work;
+4. address cached renders by a fingerprint of input, schema version, provider, model and settings, so a provider change invalidates them;
+5. only then consider the token-scoped runner protocol that would let an account run inference on a machine the operator does not trust.
 
 Always re-check `PROJECT_CONTEXT.md` for the fuller rationale and current roadmap before changing this priority.

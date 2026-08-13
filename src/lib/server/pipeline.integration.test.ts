@@ -45,6 +45,9 @@ suite('distributed generation pipeline', () => {
     process.env.STORYLOOM_DATA_DIR = dataDir;
     process.env.STORYLOOM_ENCRYPTION_KEY = 'integration-encryption-key-long-enough-01';
     process.env.STORYLOOM_WORKER_MODE = 'external';
+    // A private Redis namespace, so a development server pointed at the same Redis
+    // cannot drain the queue this test is asserting on.
+    process.env.STORYLOOM_QUEUE_PREFIX = `storyloom-test-${randomUUID()}`;
 
     modules = {
       db: await import('./db/client'),

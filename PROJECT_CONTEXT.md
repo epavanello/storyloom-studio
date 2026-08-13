@@ -130,7 +130,9 @@ Il libro viene analizzato quanto basta per costruire struttura e registri, ma au
 
 ### Local-first, non local-only
 
-Applicazione, libro, registri, cache, artifact e orchestrazione risiedono sul Mac. Ogni capacità può essere locale, cloud o ibrida, purché il passaggio al cloud sia esplicito, registrato e compatibile con la policy di privacy del libro.
+Ogni capacità può essere locale, cloud o ibrida, purché il passaggio al cloud sia esplicito, registrato e compatibile con la policy di privacy del libro.
+
+Dopo l'estensione di perimetro descritta più sotto, «local-first» non significa più che tutto risiede sul Mac: significa che ogni utente può scegliere di far girare l'inferenza sulla propria macchina, e in quel caso il testo del libro non raggiunge nessun provider cloud. Lo stato condiviso (registri, piani, job) e gli artifact vivono comunque nel database e nell'object storage del deploy, perché è ciò che permette a interfaccia e calcolo di stare su macchine diverse.
 
 Locale e cloud devono condividere i contratti funzionali, non necessariamente gli stessi modelli o pesi. Il routing deve scegliere provider che soddisfano i requisiti qualitativi; non deve degradare silenziosamente verso un provider che ignora reference, timestamp o altri vincoli obbligatori.
 
@@ -167,22 +169,31 @@ Le priorità qualitative sono, nell'ordine:
 
 Una modalità non è considerata funzionante finché non viene provata end-to-end con i provider configurati. La presenza di un adapter o di un endpoint non equivale a una validazione reale.
 
-## Cosa non è il PoC
+## Estensione di perimetro: da PoC locale a servizio deployabile
 
-Il perimetro iniziale non comprende:
+Il perimetro iniziale escludeva esplicitamente multiutenza, database e infrastruttura distribuita. Su richiesta esplicita del proprietario del progetto questi tre elementi sono ora **dentro** il perimetro, con una motivazione precisa: poter deployare l'interfaccia web e le API su un server economico e sempre acceso, e far eseguire il carico di inferenza a un worker separato — sulla macchina del proprietario quando serve inferenza locale, oppure nello stesso deploy quando si punta a modelli remoti.
+
+Ne discendono quattro elementi strutturali:
+
+- **Postgres** come stato condiviso fra web tier e worker. Nulla lo interroga a intervalli: il progresso vivo dei job sta in Redis e il database vede solo le transizioni durevoli, così un Postgres serverless resta sospeso quando non si genera nulla.
+- **Redis con BullMQ** come coda. Un job va sulla coda cloud condivisa oppure sulla coda privata di un utente, che solo la macchina di quell'utente drena.
+- **Object storage S3-compatibile** per audio, immagini e schede identità, con lettura autorizzata contro la proprietà del libro.
+- **Sessioni e segregazione per utente**, con chiavi provider portate dall'utente e cifrate a riposo.
+
+### Cosa resta fuori
 
 - generazione preventiva dell'intero libro;
 - produzione cinematografica o video animato continuo;
 - coerenza perfetta garantita per qualunque stile e numero di personaggi;
-- piattaforma multiutente o collaborazione editoriale;
+- collaborazione editoriale fra più utenti sullo stesso libro;
 - marketplace, pagamenti, DRM o distribuzione commerciale;
 - gestione completa dei diritti sulle opere, voci o likeness;
 - editing audio professionale completo;
-- database e infrastruttura distribuita;
 - orchestratore universale capace di eseguire workflow arbitrari;
-- equivalenza esatta tra i modelli locali e quelli cloud.
+- equivalenza esatta tra i modelli locali e quelli cloud;
+- runner di terze parti non fidati: oggi un worker ha credenziali dirette a Redis e Postgres, quindi può essere affidato solo a chi è legittimato a vedere i dati di tutti gli account.
 
-Questi elementi potranno essere aggiunti soltanto dopo aver validato la verticale principale.
+L'estensione di perimetro non cambia le priorità qualitative: la verticale creativa resta il criterio di successo, e l'infrastruttura esiste per renderla distribuibile, non per sostituirla.
 
 ## Criteri di successo del PoC
 
@@ -202,14 +213,16 @@ Una prima versione è davvero riuscita quando, usando un libro campione e almeno
 
 ## Stato attuale del repository
 
-Il repository contiene già una verticale dimostrativa SvelteKit con:
+Il repository contiene una verticale dimostrativa SvelteKit con:
 
 - ingestione EPUB/PDF/TXT;
 - manifest e schemi condivisi;
 - Character e Voice Registry;
 - pianificazione del capitolo;
 - orchestratore e routing per capacità;
-- persistenza su filesystem;
+- persistenza su Postgres e artifact su object storage (driver filesystem o S3);
+- coda BullMQ su Redis, con worker avviabile dentro il processo web o come processo separato;
+- account, sessioni e segregazione dei dati per utente;
 - player con utterance sequenziali e cambi scena;
 - provider demo deterministici;
 - adapter iniziali per endpoint compatibili con OpenAI.
@@ -218,7 +231,7 @@ Questa base dimostra la forma del sistema, ma non ancora la qualità del prodott
 
 - il Character Registry della demo usa euristiche semplici e produce falsi positivi;
 - l'allineamento disponibile è approssimativo, non un forced alignment reale;
-- TTS, forced alignment e immagini reali sono stati validati end-to-end sul Mac target con il Capitolo I del demo;
+- TTS, forced alignment e immagini reali sono stati validati end-to-end sul Mac target con il Capitolo I del demo, ma **prima** del passaggio a object storage e coda distribuita: quella validazione va rifatta;
 - il lifecycle locale coordina fasi sequenziali LLM, TTS, aligner, FLUX text-to-image e FLUX reference-edit, scaricando ogni runtime prima del successivo;
 - la cache non è ancora indirizzata da contenuto e configurazione;
 - la validazione automatica della coerenza delle immagini non è presente;

@@ -5,7 +5,7 @@ import { finalize, JobCancelledError, markJobActive, reportJobProgress } from '.
 import { prepareChapter, prepareRegistry } from '../orchestrator';
 import { getRedis } from './connection';
 import { isCancellationRequested } from './live';
-import type { JobPayload } from './queues';
+import { queuePrefix, type JobPayload } from './queues';
 
 /**
  * Runs one queued generation job to completion.
@@ -48,6 +48,7 @@ export function startWorkers(queueNames: string[]): RunningWorkers {
   const workers = queueNames.map((name) => {
     const worker = new Worker<JobPayload>(name, execute, {
       connection: getRedis(),
+      prefix: queuePrefix(),
       concurrency: config.worker.concurrency,
       // A chapter render holds the lock for minutes at a time while a model runs, so the
       // lock has to outlive a single heavy step rather than the default 30 seconds.
