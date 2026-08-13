@@ -197,6 +197,20 @@ export async function cancelJob(userId: string, jobId: string) {
   return toJob(row);
 }
 
+/**
+ * Guards a destructive action on a book. Deleting one while a worker is mid-render
+ * would leave that worker writing artifacts into a namespace that no longer exists.
+ */
+export async function assertNoActiveJobs(userId: string, bookId: string) {
+  const db = getDb();
+  const rows = await db
+    .select({ id: jobs.id })
+    .from(jobs)
+    .where(and(eq(jobs.userId, userId), eq(jobs.bookId, bookId), inArray(jobs.status, ['queued', 'active'])))
+    .limit(1);
+  if (rows.length) throw new Error('This book still has a queued or running job. Cancel it first.');
+}
+
 export async function deleteJobRecord(userId: string, jobId: string) {
   const db = getDb();
   const [row] = await db.select().from(jobs).where(and(eq(jobs.id, jobId), eq(jobs.userId, userId))).limit(1);

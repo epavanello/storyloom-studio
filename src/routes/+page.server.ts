@@ -1,5 +1,6 @@
 import type { Actions, PageServerLoad } from './$types';
 import { fail, redirect } from '@sveltejs/kit';
+import { assertNoActiveJobs } from '$lib/server/jobs';
 import { ingestBook } from '$lib/server/orchestrator';
 import { requireUser } from '$lib/server/session';
 import { deleteBook, listBooks } from '$lib/server/store';
@@ -36,6 +37,7 @@ export const actions: Actions = {
     const bookId = String((await request.formData()).get('bookId') ?? '');
     if (!bookId) return fail(400, { message: 'Missing book.' });
     try {
+      await assertNoActiveJobs(user.id, bookId);
       await deleteBook(user.id, bookId);
     } catch (error) {
       return fail(400, { message: error instanceof Error ? error.message : 'The book could not be removed.' });

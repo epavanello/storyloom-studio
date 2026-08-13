@@ -162,6 +162,25 @@ suite('distributed generation pipeline', () => {
     expect(await modules.accounts.getProviderCredential(stranger, 'openrouter')).toBeNull();
   });
 
+  it('parks work on a private queue when the account runs its own machine', async () => {
+    await modules.accounts.saveUserSettings(owner, { execution: 'local' });
+    const job = await modules.jobs.startGenerationJob(owner, { kind: 'registry', bookId });
+    expect(job.executionTarget).toBe('local');
+    expect(job.queueName).toBe(modules.queueNames.localQueueFor(owner));
+
+    // Only the cloud queue has a worker in this test, so the job stays put and the
+    // dashboard is able to say why.
+    const snapshot = await modules.queues.queueSnapshot(job.queueName);
+    expect(snapshot.waiting).toBe(1);
+    expect(snapshot.hasWorker).toBe(false);
+
+    // And a book with unfinished work cannot be deleted out from under a worker.
+    await expect(modules.jobs.assertNoActiveJobs(owner, bookId)).rejects.toThrow(/queued or running/);
+    expect((await modules.jobs.cancelJob(owner, job.id)).status).toBe('cancelled');
+    await expect(modules.jobs.assertNoActiveJobs(owner, bookId)).resolves.toBeUndefined();
+    await modules.accounts.saveUserSettings(owner, { execution: 'cloud' });
+  }, 30_000);
+
   it('removes objects and rows together when the owner deletes a book', async () => {
     const rendered = await modules.store.getRenderedChapter(bookId, (await modules.store.getManifest(owner, bookId)).chapters[0].id);
     const audio = rendered!.utterances[0].audio;

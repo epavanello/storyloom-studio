@@ -52,11 +52,22 @@
       <div class="section-title"><div><p class="eyebrow">Your shelf</p><h2>Continue listening</h2></div><span>{data.books.length} {data.books.length === 1 ? 'book' : 'books'}</span></div>
       <div class="book-grid">
         {#each data.books as book, index}
-          <a class="book-card" href={`/books/${book.id}`}>
-            <div class="mini-cover cover-{index % 4}"><span>{book.title.slice(0, 1)}</span><small>{book.chapterCount} CHAPTERS</small></div>
-            <div><strong>{book.title}</strong><span>{book.registryStatus === 'ready' ? `${book.characterCount} characters ready` : 'Ready to prepare'}</span></div>
-            <b>→</b>
-          </a>
+          <div class="book-slot">
+            <a class="book-card" href={`/books/${book.id}`}>
+              <div class="mini-cover cover-{index % 4}"><span>{book.title.slice(0, 1)}</span><small>{book.chapterCount} CHAPTERS</small></div>
+              <div><strong>{book.title}</strong><span>{book.registryStatus === 'ready' ? `${book.characterCount} characters ready` : 'Ready to prepare'}</span></div>
+              <b>→</b>
+            </a>
+            <form
+              method="POST"
+              action="?/delete"
+              use:enhance={() => async ({ update }) => { await update({ reset: false }); }}
+              onsubmit={(event) => { if (!confirm(`Delete “${book.title}” and every render and artifact generated from it? This cannot be undone.`)) event.preventDefault(); }}
+            >
+              <input type="hidden" name="bookId" value={book.id} />
+              <button class="book-delete" aria-label={`Delete ${book.title}`} title="Delete this book">×</button>
+            </form>
+          </div>
         {/each}
       </div>
     </section>
