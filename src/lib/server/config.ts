@@ -65,6 +65,9 @@ export const AppConfigSchema = z.object({
   localLlmModelKey: z.string(),
   openRouterApiKey: z.string(),
   openRouterLlmModel: z.string(),
+  // How OpenRouter picks between the providers serving a model. Empty keeps OpenRouter's
+  // default price-weighted load balancing; any sort value disables that balancing.
+  openRouterProviderSort: z.enum(['throughput', 'latency', 'price', '']),
   localTtsEngine: z.enum(['qwen', 'chatterbox-v3']),
   localTtsBaseUrl: z.string(),
   localTtsModel: z.string(),
@@ -149,6 +152,7 @@ export function getConfig(): AppConfig {
     localLlmModelKey: env.LOCAL_LLM_MODEL_KEY ?? env.LOCAL_LLM_MODEL ?? 'local-model',
     openRouterApiKey: env.OPENROUTER_API_KEY ?? '',
     openRouterLlmModel: env.OPENROUTER_LLM_MODEL ?? 'deepseek/deepseek-v4-flash-0731',
+    openRouterProviderSort: env.OPENROUTER_PROVIDER_SORT ?? 'throughput',
     localTtsEngine: env.LOCAL_TTS_ENGINE ?? 'qwen',
     localTtsBaseUrl: env.LOCAL_TTS_BASE_URL ?? 'http://127.0.0.1:7861/v1',
     localTtsModel: env.LOCAL_TTS_MODEL ?? 'qwen3-tts',

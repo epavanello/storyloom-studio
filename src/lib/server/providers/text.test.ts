@@ -23,4 +23,49 @@ describe('OpenRouter structured output', () => {
     const retryBody = JSON.parse(fetchMock.mock.calls[1][1].body);
     expect(retryBody.messages.at(-1).content).toContain('Validation issues');
   });
+
+  it('routes by throughput and only to providers honouring the strict schema', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ choices: [{ message: { content: '{"characters":[]}' } }] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await new OpenRouterStructuredProvider('deepseek/test', 'test-key').generate({
+      schemaName: 'character-patch',
+      schema: z.object({ characters: z.array(z.string()) }),
+      system: 'Extract characters.',
+      prompt: 'Chapter text'
+    });
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).provider).toEqual({ sort: 'throughput', require_parameters: true });
+  });
+
+  it('keeps the default routing but still demands schema support when sorting is disabled', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ choices: [{ message: { content: '{"characters":[]}' } }] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await new OpenRouterStructuredProvider('deepseek/test', 'test-key', '').generate({
+      schemaName: 'character-patch',
+      schema: z.object({ characters: z.array(z.string()) }),
+      system: 'Extract characters.',
+      prompt: 'Chapter text'
+    });
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).provider).toEqual({ require_parameters: true });
+  });
+
+  it('explains a routing dead end instead of reporting a bare 404', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response('{"error":{"message":"No allowed providers are available for the selected model."}}', { status: 404, statusText: 'Not Found' })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const attempt = new OpenRouterStructuredProvider('deepseek/test', 'test-key').generate({
+      schemaName: 'character-patch',
+      schema: z.object({ characters: z.array(z.string()) }),
+      system: 'Extract characters.',
+      prompt: 'Chapter text'
+    });
+
+    await expect(attempt).rejects.toThrow(/OPENROUTER_PROVIDER_SORT/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });

@@ -72,8 +72,14 @@ function describeFailure(error: unknown) {
 
 export class OpenRouterStructuredProvider implements StructuredTextProvider {
   readonly id = 'openrouter';
+  private readonly routing: { sort?: string; require_parameters: true };
 
-  constructor(readonly model: string, private readonly apiKey: string) {}
+  constructor(readonly model: string, private readonly apiKey: string, providerSort: 'throughput' | 'latency' | 'price' | '' = 'throughput') {
+    // `require_parameters` is not optional for this caller: every request here carries a
+    // strict `json_schema`, and a provider that silently ignores it answers with prose that
+    // then fails validation and burns a retry. Sorting is the tunable part; this is not.
+    this.routing = providerSort ? { sort: providerSort, require_parameters: true } : { require_parameters: true };
+  }
 
   async generate<T>(request: StructuredRequest<T>): Promise<T> {
     const timeoutMs = request.timeoutMs ?? 90_000;
@@ -101,6 +107,7 @@ export class OpenRouterStructuredProvider implements StructuredTextProvider {
           body: JSON.stringify({
             model: this.model,
             messages,
+            provider: this.routing,
             response_format: {
               type: 'json_schema',
               json_schema: { name: request.schemaName, strict: true, schema: z.toJSONSchema(request.schema) }
@@ -112,9 +119,13 @@ export class OpenRouterStructuredProvider implements StructuredTextProvider {
         });
         const errorText = response.ok ? '' : (await response.text()).slice(0, 500);
         if (!response.ok) {
-          const providerError = new Error(`${response.status} ${response.statusText}: ${errorText}`);
-          if (response.status < 500 && response.status !== 408 && response.status !== 429) throw providerError;
-          throw providerError;
+          // The routing constraints can leave no candidate at all, which OpenRouter reports
+          // as a plain 404. Say which knob caused it rather than letting it read as a
+          // missing model. The status prefix is what marks it unretryable below.
+          if (response.status === 404 && /no allowed providers/i.test(errorText)) {
+            throw new Error(`404 Not Found: no OpenRouter provider serves ${this.model} with strict json_schema${this.routing.sort ? ` under sort "${this.routing.sort}"` : ''}. Pick another model, or set OPENROUTER_PROVIDER_SORT empty to widen the pool.`);
+          }
+          throw new Error(`${response.status} ${response.statusText}: ${errorText}`);
         }
         const payload = await response.json() as { choices?: { message?: { content?: string | null } }[]; error?: { message?: string } };
         const content = payload.choices?.[0]?.message?.content;

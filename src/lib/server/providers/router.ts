@@ -59,7 +59,7 @@ export function providers(context: RunContext) {
     model: config.localLlmModel,
     reasoningEffort: 'none'
   });
-  const cloudText = new OpenRouterStructuredProvider(config.openRouterLlmModel, cloudKey);
+  const cloudText = new OpenRouterStructuredProvider(config.openRouterLlmModel, cloudKey, config.openRouterProviderSort);
   const localSpeech = config.localTtsEngine === 'chatterbox-v3'
     ? new ChatterboxSpeechProvider(config.localTtsBaseUrl)
     : new OpenAiCompatibleSpeechProvider('local-tts', config.localTtsModel, config.localTtsBaseUrl, '', 'wav');
