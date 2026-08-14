@@ -13,11 +13,15 @@ function create() {
     throw new Error('BETTER_AUTH_SECRET is not set. Sessions cannot be signed without it. Generate one with `openssl rand -base64 32`.');
   }
 
-  const social: Record<string, { clientId: string; clientSecret: string }> = {};
+  // Closing registration has to cover OAuth too: without this a social login would still
+  // create an account for any stranger who happens to have a GitHub or Google account.
+  const disableSignUp = !config.auth.allowSignUp;
+
+  const social: Record<string, { clientId: string; clientSecret: string; disableSignUp: boolean }> = {};
   // A provider is only advertised when it is actually configured, so a deployment never
   // shows a sign-in button that cannot complete.
-  if (config.auth.github.clientId && config.auth.github.clientSecret) social.github = config.auth.github;
-  if (config.auth.google.clientId && config.auth.google.clientSecret) social.google = config.auth.google;
+  if (config.auth.github.clientId && config.auth.github.clientSecret) social.github = { ...config.auth.github, disableSignUp };
+  if (config.auth.google.clientId && config.auth.google.clientSecret) social.google = { ...config.auth.google, disableSignUp };
 
   return betterAuth({
     appName: 'Storyloom Studio',
@@ -27,7 +31,7 @@ function create() {
     database: drizzleAdapter(getDb(), { provider: 'sqlite', schema }),
     emailAndPassword: {
       enabled: true,
-      disableSignUp: !config.auth.allowSignUp,
+      disableSignUp,
       minPasswordLength: 10
     },
     socialProviders: social,

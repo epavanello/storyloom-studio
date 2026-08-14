@@ -138,7 +138,9 @@ export function getConfig(): AppConfig {
     auth: {
       secret: env.BETTER_AUTH_SECRET ?? '',
       trustedOrigins: list(env.BETTER_AUTH_TRUSTED_ORIGINS, []),
-      allowSignUp: flag(env.STORYLOOM_ALLOW_SIGNUP, true),
+      // Registration is closed unless a deployment opts in, so an instance that is put
+      // online before its owner thinks about auth does not collect strangers' accounts.
+      allowSignUp: flag(env.STORYLOOM_ALLOW_SIGNUP, false),
       github: { clientId: env.GITHUB_CLIENT_ID ?? '', clientSecret: env.GITHUB_CLIENT_SECRET ?? '' },
       google: { clientId: env.GOOGLE_CLIENT_ID ?? '', clientSecret: env.GOOGLE_CLIENT_SECRET ?? '' }
     },

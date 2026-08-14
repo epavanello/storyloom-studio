@@ -24,7 +24,7 @@ export type RunningWorker = { stop: () => Promise<void> };
  * real broker. A single-process deployment does not, and should not have to install one.
  */
 export type QueueDriver = {
-  readonly kind: 'redis' | 'memory';
+  readonly kind: 'redis' | 'memory' | 'none';
   /** Human-readable name of the queue, shown in the job dashboard. */
   readonly name: string;
 
