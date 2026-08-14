@@ -42,6 +42,26 @@ export class AiSdkStructuredProvider implements StructuredTextProvider {
   }
 }
 
+function formatElapsed(seconds: number) {
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`;
+}
+
+/**
+ * Keeps the progress line moving while one request is in flight. A single call can occupy
+ * five minutes, and a status line that never changes for that long reads as a hang rather
+ * than as work in progress. Status failures are swallowed on purpose: a heartbeat must
+ * never be the thing that fails a generation.
+ */
+function startHeartbeat(onStatus: ((detail: string) => Promise<void>) | undefined, label: (elapsed: string) => string) {
+  if (!onStatus) return () => {};
+  const startedAt = Date.now();
+  const timer = setInterval(() => {
+    void onStatus(label(formatElapsed(Math.round((Date.now() - startedAt) / 1_000)))).catch(() => {});
+  }, 15_000);
+  timer.unref?.();
+  return () => clearInterval(timer);
+}
+
 /** Compresses a provider error into something that still fits on one progress line. */
 function describeFailure(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
@@ -64,13 +84,15 @@ export class OpenRouterStructuredProvider implements StructuredTextProvider {
     ];
     let lastError: unknown;
     // Why the previous attempt was abandoned, phrased for the progress line. Empty on the
-    // first attempt, which is exactly when no retry counter should be shown at all.
+    // first attempt, which is exactly when no attempt counter should be shown at all.
     let retryReason = '';
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       const timeoutLabel = timeoutMs >= 120_000 ? `${Math.round(timeoutMs / 60_000)} min` : `${Math.round(timeoutMs / 1_000)}s`;
-      await request.onStatus?.(retryReason
-        ? `Asking the model again · retry ${attempt - 1} of ${maxAttempts - 1} · ${retryReason}`
-        : `Waiting for the model to answer · up to ${timeoutLabel}`);
+      const label = retryReason
+        ? `Attempt ${attempt} of ${maxAttempts} · ${retryReason}`
+        : 'Waiting for OpenRouter';
+      await request.onStatus?.(`${label} · up to ${timeoutLabel}`);
+      const stopHeartbeat = startHeartbeat(request.onStatus, (elapsed) => `${label} · ${elapsed} of ${timeoutLabel}`);
       try {
         const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
           method: 'POST',
@@ -102,8 +124,12 @@ export class OpenRouterStructuredProvider implements StructuredTextProvider {
         } catch (error) {
           lastError = error;
           if (attempt === maxAttempts) break;
-          retryReason = 'the last answer was missing required fields';
-          await request.onStatus?.('The model answered in the wrong shape · asking it to correct the missing fields');
+          // A SyntaxError means the JSON itself never closed, which in practice means the
+          // answer hit the token ceiling — a different problem from a complete answer that
+          // simply omitted a field, and worth telling apart on the progress line.
+          retryReason = error instanceof SyntaxError
+            ? 'the previous answer was cut off before it finished'
+            : 'the previous answer was missing required fields';
           const issues = error instanceof z.ZodError ? error.issues : [{ message: error instanceof Error ? error.message : 'Invalid JSON' }];
           messages.push(
             { role: 'assistant', content },
@@ -115,13 +141,14 @@ export class OpenRouterStructuredProvider implements StructuredTextProvider {
         const fatalClientError = error instanceof Error && /^4\d\d /.test(error.message) && !/^(408|429) /.test(error.message);
         if (fatalClientError) throw error;
         const timedOut = error instanceof Error && (error.name === 'TimeoutError' || /timed? ?out|aborted/i.test(error.message));
-        const failure = timedOut ? `no answer within ${timeoutLabel}` : `the call failed (${describeFailure(error)})`;
-        retryReason = timedOut ? `the last call ran past ${timeoutLabel}` : `the last call failed (${describeFailure(error)})`;
+        retryReason = timedOut ? `no answer within ${timeoutLabel}` : `the previous call failed (${describeFailure(error)})`;
         if (attempt < maxAttempts) {
           const retryDelayMs = attempt * 2_000;
-          await request.onStatus?.(`${failure} · retrying in ${retryDelayMs / 1_000}s`);
+          await request.onStatus?.(`${retryReason} · retrying in ${retryDelayMs / 1_000}s`);
           await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
         }
+      } finally {
+        stopHeartbeat();
       }
     }
     throw new Error(`OpenRouter could not produce ${request.schemaName} after ${maxAttempts} ${maxAttempts === 1 ? 'attempt' : 'attempts'}: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
