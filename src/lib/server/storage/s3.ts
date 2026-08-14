@@ -2,8 +2,10 @@ import type { AppConfig } from '../config';
 import { assertSafeKey, type ObjectStorage } from './index';
 
 /**
- * S3-compatible driver, validated against the request shape Cloudflare R2 accepts:
- * a custom endpoint, `auto` as region, and path-style addressing.
+ * S3-compatible driver, written against the request shape Cloudflare R2 documents:
+ * a custom endpoint, `auto` as region, and path-style addressing. It has NOT been
+ * exercised against a real bucket yet, so treat that as unverified until a round trip
+ * through R2 or MinIO is recorded.
  *
  * The AWS SDK is loaded on first use rather than at import time. It is by far the
  * heaviest dependency in the tree, and a deployment running STORAGE_DRIVER=fs must not

@@ -149,6 +149,8 @@ Exercised end to end in `mock` mode against a real SQLite database and Redis, th
 
 `src/lib/server/pipeline.integration.test.ts` covers that pipeline and runs automatically when `DATABASE_URL` and `REDIS_URL` are set; the default `pnpm test` skips it and needs no services.
 
+Every one of those runs used `STORAGE_DRIVER=fs` and a local SQLite file. **The S3/R2 driver and a hosted Turso database have never been exercised against a real endpoint** — they are written to the documented request shapes and type-check, which is not evidence that they work. Verify both before relying on topology 2 or 3.
+
 The earlier local vertical — Qwen3.6 35B A3B for structured planning, Qwen3-TTS 1.7B, Qwen3 ForcedAligner for exact word timestamps, FLUX.2 Klein 4B for character sheets and scenes — was validated on an Apple M4 Max with 36 GB unified memory **before** this restructuring. Those providers are unchanged in substance but have not been re-run end to end since artifacts moved behind the storage layer.
 
 ## Not built yet
