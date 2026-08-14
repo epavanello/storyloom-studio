@@ -1,22 +1,21 @@
-import { Worker, type Job } from 'bullmq';
 import { getConfig } from '../config';
 import { buildRunContext } from '../context';
-import { finalize, JobCancelledError, markJobActive, reportJobProgress } from '../jobs';
+import { finalize, JobCancelledError, markJobActive, recoverInterruptedJobs, reportJobProgress } from '../jobs';
 import { prepareChapter, prepareRegistry, regenerateChapterAudio, regenerateCharacterReference } from '../orchestrator';
-import { getRedis } from './connection';
-import { isCancellationRequested } from './live';
-import { JOBS_QUEUE, queuePrefix, type JobPayload } from './queues';
+import { generateStory } from '../story';
+import { getStorage } from '../storage/index';
+import { getQueueDriver, type JobPayload, type RunningWorker } from './index';
 
 /**
  * Runs one queued generation job to completion.
  *
- * The handler is deliberately the only place that knows how a queue entry maps onto the
- * orchestrator: everything else — routes, the dashboard, the standalone worker — talks
- * about jobs, not about BullMQ.
+ * This is the only place that knows how a queue entry maps onto the orchestrator:
+ * everything else — routes, the dashboard, the standalone worker — talks about jobs.
  */
-async function execute(job: Job<JobPayload>) {
-  const { jobId, userId, bookId, chapterId, characterId, kind, force } = job.data;
-  if (await isCancellationRequested(jobId)) {
+async function execute(payload: JobPayload) {
+  const { jobId, userId, bookId, chapterId, characterId, kind, force } = payload;
+  const queue = getQueueDriver();
+  if (await queue.isCancellationRequested(jobId)) {
     await finalize(jobId, 'cancelled', { error: 'Cancelled before it started' });
     return;
   }
@@ -26,7 +25,12 @@ async function execute(job: Job<JobPayload>) {
   const report = (update: Parameters<typeof reportJobProgress>[1]) => reportJobProgress(jobId, update);
 
   try {
-    if (kind === 'registry') await prepareRegistry(context, report);
+    // Fail before spending anything. Misconfigured storage would otherwise surface at
+    // the first artifact write, which is after a paid model call and, locally, after
+    // minutes of speech synthesis.
+    getStorage();
+    if (kind === 'story') await generateStory(context, report);
+    else if (kind === 'registry') await prepareRegistry(context, report);
     else if (kind === 'character-reference') await regenerateCharacterReference(context, characterId!, report);
     else if (kind === 'chapter-audio') await regenerateChapterAudio(context, chapterId!, jobId, report);
     else await prepareChapter(context, chapterId!, report, { force, generationId: jobId });
@@ -38,29 +42,19 @@ async function execute(job: Job<JobPayload>) {
     }
     const message = error instanceof Error ? error.message : 'Generation failed';
     await finalize(jobId, 'failed', { error: message });
-    // Rethrown so BullMQ records the failure too and the queue snapshot stays truthful.
+    // Rethrown so the queue records the failure too and the snapshot stays truthful.
     throw error;
   }
 }
 
-export type RunningWorker = { worker: Worker<JobPayload>; stop: () => Promise<void> };
-
 /** Attaches a consumer to the deployment's queue. */
 export function startWorker(): RunningWorker {
   const config = getConfig();
-  const worker = new Worker<JobPayload>(JOBS_QUEUE, execute, {
-    connection: getRedis(),
-    prefix: queuePrefix(),
-    concurrency: config.worker.concurrency,
-    // A chapter render holds the lock for minutes at a time while a model runs, so the
-    // lock has to outlive a single heavy step rather than the default 30 seconds.
-    lockDuration: config.worker.lockDurationMs,
-    stalledInterval: config.worker.stalledIntervalMs,
-    maxStalledCount: 1
+  const running = getQueueDriver().startWorker(execute, config.worker.concurrency);
+  // Recovery runs after the worker is listening, so anything re-enqueued is picked up
+  // immediately rather than waiting for the next request.
+  void recoverInterruptedJobs().catch((error) => {
+    console.error('[queue] could not recover interrupted jobs:', error instanceof Error ? error.message : error);
   });
-  worker.on('failed', (job, error) => console.error(`[worker] job ${job?.id ?? 'unknown'} failed:`, error.message));
-  worker.on('error', (error) => console.error('[worker]', error.message));
-  worker.on('ready', () => console.log(`[worker] listening on ${JOBS_QUEUE} (mode ${config.mode}, concurrency ${config.worker.concurrency})`));
-
-  return { worker, stop: () => worker.close() };
+  return running;
 }

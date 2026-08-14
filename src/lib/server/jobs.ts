@@ -5,11 +5,11 @@ import { getConfig } from './config';
 import { getDb } from './db/client';
 import { jobs } from './db/schema';
 import type { ProgressUpdate } from './orchestrator';
-import { forgetLiveJob, isCancellationRequested, publishJobState, readLiveJob, readLiveJobs, requestCancellation } from './queue/live';
-import { getQueue, JOBS_QUEUE, queueSnapshot, waitingPosition, type JobPayload } from './queue/queues';
+import { getQueueDriver, type JobPayload } from './queue/index';
 import { assertBookOwner } from './store';
 
 export type JobRequest =
+  | { kind: 'story'; bookId: string }
   | { kind: 'registry'; bookId: string }
   | { kind: 'chapter'; bookId: string; chapterId: string; force?: boolean }
   | { kind: 'chapter-audio'; bookId: string; chapterId: string }
@@ -30,6 +30,7 @@ function step(id: string, label: string): GenerationJobStep {
 }
 
 export function stepsFor(kind: JobKind): GenerationJobStep[] {
+  if (kind === 'story') return [step('story-outline', 'Design the complete story'), step('story-chapters', 'Write all source chapters')];
   if (kind === 'character-reference') return [step('character-reference', 'Regenerate illustrated character reference')];
   if (kind === 'chapter-audio') return [step('speech', 'Regenerate narration and dialogue'), step('alignment', 'Realign words and audio')];
   return kind === 'registry'
@@ -131,17 +132,17 @@ export async function startGenerationJob(userId: string, request: JobRequest): P
     kind: row.kind,
     force: row.force
   };
-  await getQueue(JOBS_QUEUE).add(row.kind, payload, { jobId: row.id });
+  await getQueueDriver().enqueue(payload);
 
   const [stored] = await db.select().from(jobs).where(eq(jobs.id, row.id)).limit(1);
   const job = toJob(stored);
-  await publishJobState(job);
+  await getQueueDriver().publishJobState(job);
   return decorate(job);
 }
 
 async function decorate(job: GenerationJob): Promise<GenerationJob> {
   if (job.status !== 'queued') return job;
-  return { ...job, queuePosition: await waitingPosition(job.id).catch(() => null) };
+  return { ...job, queuePosition: await getQueueDriver().waitingPosition(job.id).catch(() => null) };
 }
 
 /**
@@ -151,7 +152,7 @@ async function decorate(job: GenerationJob): Promise<GenerationJob> {
  */
 export async function jobsForUser(userId: string, options: { bookId?: string; limit?: number } = {}) {
   const limit = options.limit ?? 50;
-  const live = await readLiveJobs(userId, limit).catch(() => [] as GenerationJob[]);
+  const live = await getQueueDriver().readLiveJobs(userId, limit).catch(() => [] as GenerationJob[]);
   const filtered = options.bookId ? live.filter((job) => job.bookId === options.bookId) : live;
   if (filtered.length >= limit) return Promise.all(filtered.slice(0, limit).map(decorate));
 
@@ -167,7 +168,7 @@ export async function jobsForUser(userId: string, options: { bookId?: string; li
 }
 
 export async function getJob(userId: string, jobId: string) {
-  const live = await readLiveJob(jobId).catch(() => null);
+  const live = await getQueueDriver().readLiveJob(jobId).catch(() => null);
   if (live && live.userId === userId) return decorate(live);
   const db = getDb();
   const [row] = await db.select().from(jobs).where(and(eq(jobs.id, jobId), eq(jobs.userId, userId))).limit(1);
@@ -176,7 +177,7 @@ export async function getJob(userId: string, jobId: string) {
 
 /** Current depth of the deployment's queue and whether anything is draining it. */
 export async function queueHealth() {
-  return queueSnapshot();
+  return getQueueDriver().snapshot();
 }
 
 export async function cancelJob(userId: string, jobId: string) {
@@ -187,9 +188,8 @@ export async function cancelJob(userId: string, jobId: string) {
 
   // Remove it from the queue if it has not started; if it has, the running worker
   // observes the cancellation flag at its next step boundary.
-  const queued = await getQueue(JOBS_QUEUE).getJob(jobId);
-  if (queued && !(await queued.isActive())) await queued.remove().catch(() => {});
-  await requestCancellation(jobId);
+  await getQueueDriver().removeIfWaiting(jobId);
+  await getQueueDriver().requestCancellation(jobId);
 
   if (row.status === 'queued') {
     const job = await finalize(jobId, 'cancelled', { error: 'Cancelled before it started' });
@@ -218,7 +218,47 @@ export async function deleteJobRecord(userId: string, jobId: string) {
   if (!row) return;
   if (row.status === 'queued' || row.status === 'active') throw new Error('Cancel the job before removing it');
   await db.delete(jobs).where(eq(jobs.id, jobId));
-  await forgetLiveJob({ id: row.id, userId });
+  await getQueueDriver().forgetLiveJob({ id: row.id, userId });
+}
+
+/**
+ * Re-enqueues work that was accepted but never finished, so a restart does not strand
+ * it. The in-process queue holds nothing across a restart, which makes the `jobs` table
+ * the only durable record of what was owed: anything still queued goes back on the
+ * queue, and anything caught mid-run is reported as interrupted rather than left
+ * looking active forever.
+ */
+export async function recoverInterruptedJobs() {
+  const queue = getQueueDriver();
+  if (queue.kind !== 'memory') return { requeued: 0, interrupted: 0 };
+
+  const db = getDb();
+  const rows = await db.select().from(jobs).where(inArray(jobs.status, ['queued', 'active']));
+  let requeued = 0;
+  let interrupted = 0;
+
+  for (const row of rows) {
+    if (row.status === 'active') {
+      await finalize(row.id, 'failed', { error: 'Interrupted when the server restarted. Start it again to resume from cached artifacts.' });
+      interrupted += 1;
+      continue;
+    }
+    const job = toJob(row);
+    await queue.publishJobState(job);
+    await queue.enqueue({
+      jobId: row.id,
+      userId: row.userId,
+      bookId: row.bookId,
+      chapterId: row.chapterId,
+      characterId: row.characterId,
+      kind: row.kind,
+      force: row.force
+    });
+    requeued += 1;
+  }
+
+  if (requeued || interrupted) console.log(`[queue] recovered ${requeued} queued job(s), marked ${interrupted} interrupted`);
+  return { requeued, interrupted };
 }
 
 // ---------------------------------------------------------------------------
@@ -242,7 +282,7 @@ export async function markJobActive(jobId: string) {
     .set({ status: 'active', startedAt, updatedAt: startedAt, attempts: row.attempts + 1, error: null })
     .where(eq(jobs.id, jobId));
   const job = toJob({ ...row, status: 'active', startedAt, updatedAt: startedAt, attempts: row.attempts + 1, error: null });
-  await publishJobState(job);
+  await getQueueDriver().publishJobState(job);
   return job;
 }
 
@@ -251,8 +291,9 @@ export async function markJobActive(jobId: string) {
  * database once, when the job reaches a terminal state.
  */
 export async function reportJobProgress(jobId: string, update: ProgressUpdate) {
-  if (await isCancellationRequested(jobId)) throw new JobCancelledError();
-  const job = await readLiveJob(jobId);
+  const queue = getQueueDriver();
+  if (await queue.isCancellationRequested(jobId)) throw new JobCancelledError();
+  const job = await queue.readLiveJob(jobId);
   if (!job) return;
   const steps = job.steps.map((candidate) => {
     if (candidate.id !== update.stepId) return candidate;
@@ -264,7 +305,7 @@ export async function reportJobProgress(jobId: string, update: ProgressUpdate) {
       detail: update.detail ?? candidate.detail
     };
   });
-  await publishJobState({ ...job, steps, updatedAt: new Date().toISOString() });
+  await queue.publishJobState({ ...job, steps, updatedAt: new Date().toISOString() });
 }
 
 export async function finalize(
@@ -273,7 +314,7 @@ export async function finalize(
   options: { error?: string } = {}
 ) {
   const db = getDb();
-  const live = await readLiveJob(jobId).catch(() => null);
+  const live = await getQueueDriver().readLiveJob(jobId).catch(() => null);
   const row = await loadRow(jobId).catch(() => null);
   if (!row) return null;
 
@@ -288,6 +329,6 @@ export async function finalize(
     .set({ status, steps, error: options.error ?? null, completedAt, updatedAt: completedAt })
     .where(eq(jobs.id, jobId));
   const job = toJob({ ...row, status, steps, error: options.error ?? null, completedAt, updatedAt: completedAt });
-  await publishJobState(job);
+  await getQueueDriver().publishJobState(job);
   return job;
 }

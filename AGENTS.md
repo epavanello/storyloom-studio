@@ -102,7 +102,8 @@ A deployment is **either cloud or local**, decided by `STORYLOOM_MODE`, and ever
 
 - Do not add per-account execution targets, per-user queues, or mixed cloud/local routing. Switching a deployment from local to cloud must remain a configuration change.
 - What is parametric is which process drains the queue: `STORYLOOM_WORKER_MODE` is `inline`, `external` or `off`.
-- Infrastructure that a deployment must be able to swap — the database and the object store — belongs behind a driver with one interface and one key space, so the same code serves a local file and a hosted service.
+- Infrastructure that a deployment must be able to swap — the database, the object store, the queue — belongs behind a driver with one interface, so the same code serves a single machine and a distributed deployment.
+- Self-hosting on one machine must not require running a broker or a database server. A driver that only exists in the hosted form is incomplete, and so is one that quietly degrades: a configuration that cannot work, such as an in-process queue with a detached worker, must be refused at startup.
 
 ### Generate on demand
 
@@ -313,7 +314,7 @@ Changes may improve this sequence, but they must preserve the separation of resp
 - Prefer pure validation and transformation functions that can be tested without models.
 - Use clear domain names such as `ChapterPlan`, `VoiceProfile`, `VisualCue`, and `ArtifactRef`.
 - Avoid broad refactors while implementing a focused task unless the current design genuinely blocks correctness.
-- SQLite through libSQL, Redis with BullMQ, and filesystem or S3-compatible storage are the deliberate infrastructure of the deployable service. Anything beyond them — another datastore, a container platform, a distributed workflow engine — still needs a demonstrated requirement and explicit scope expansion.
+- SQLite through libSQL, an in-process or Redis/BullMQ queue, and filesystem or S3-compatible storage are the deliberate infrastructure of the deployable service. Anything beyond them — another datastore, a container platform, a distributed workflow engine — still needs a demonstrated requirement and explicit scope expansion.
 - The database and the object store are swappable by configuration, not by code. A change that works only against a local file, or only against the hosted form, is incomplete.
 - Keep the queue a queue. Job handlers map a queue entry onto the orchestrator; they do not acquire creative or routing decisions of their own.
 - Preserve existing formatting and conventions unless the task includes a formatting migration.

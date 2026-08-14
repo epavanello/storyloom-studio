@@ -15,6 +15,7 @@
 
   const unfinished = $derived(jobs.filter((job) => job.status === 'queued' || job.status === 'active'));
   const finished = $derived(jobs.filter((job) => job.status !== 'queued' && job.status !== 'active'));
+  const workerCommand = $derived(data.deployment.mode === 'mock' ? 'pnpm worker' : `pnpm worker:${data.deployment.mode}`);
 
   onMount(() => {
     const timer = setInterval(() => void refresh(), 2000);
@@ -50,7 +51,7 @@
 
   function title(job: GenerationJob) {
     const book = data.titles[job.bookId] ?? job.bookId;
-    return job.kind === 'registry' ? `${book} · character registry` : `${book} · ${job.chapterId}`;
+    return job.kind === 'story' ? `${book} · source story` : job.kind === 'registry' ? `${book} · character registry` : `${book} · ${job.chapterId}`;
   }
 
   function percent(job: GenerationJob) {
@@ -97,7 +98,7 @@
         {#if !queue.hasWorker}
           <p class="queue-warning">
             No worker is draining this queue{queue.waiting ? `, and ${queue.waiting} job${queue.waiting === 1 ? ' is' : 's are'} waiting` : ''}.
-            {data.deployment.workerMode === 'inline' ? 'The web process should be running one — check its logs.' : 'Start `pnpm worker` on the machine that runs inference.'}
+            {data.deployment.workerMode === 'inline' ? 'The web process should be running one — check its logs.' : `Start \`${workerCommand}\` on the machine that runs inference.`}
           </p>
         {/if}
       </article>

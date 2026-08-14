@@ -1,6 +1,6 @@
 # Storyloom Studio
 
-Storyloom turns EPUB, PDF and plain-text books into synchronized audiovisual chapter performances: it analyzes a book once, locks characters into a central registry, and renders chapters on demand with expressive voices and reference-conditioned scene images.
+Storyloom turns imported or AI-authored books into synchronized audiovisual chapter performances: it analyzes a book once, locks characters into a central registry, and renders chapters on demand with expressive voices and reference-conditioned scene images. EPUB, PDF and plain text can be imported; alternatively, the queued story writer can turn a prompt into a complete multi-chapter source manuscript.
 
 It runs as a deployable service where **the web tier and the machine doing inference do not have to be the same box**. For the product vision, boundaries and quality goals, read [PROJECT_CONTEXT.md](./PROJECT_CONTEXT.md); treat that document as intent and verify every claimed capability against the code.
 
@@ -46,7 +46,11 @@ Both stateful pieces sit behind one interface, so the same code serves a laptop 
 | Database | `DATABASE_URL=file:./data/storyloom.db` | `DATABASE_URL=libsql://…turso.io` + `DATABASE_AUTH_TOKEN` |
 | Artifacts | `STORAGE_DRIVER=fs` | `STORAGE_DRIVER=s3` + bucket credentials |
 
-A `file:` database only works when everything runs in one place — two machines cannot share a SQLite file. Redis is required either way; the queue is what lets a job outlive the request that created it.
+| Queue | in-process, no `REDIS_URL` | `REDIS_URL` pointing at Redis |
+
+A `file:` database and the in-process queue only work when everything runs in one place: two machines cannot share a SQLite file, and nothing outside the process can see an in-memory queue. Selecting either while `STORYLOOM_WORKER_MODE` is not `inline` is refused at startup rather than leaving jobs silently unexecuted.
+
+The in-process queue is not a toy: work already accepted is durable, because the `jobs` table is the record of what is owed and anything still queued is re-enqueued at boot. What it does not survive is a render already in flight, which is reported as interrupted so the user can restart it.
 
 ### Cost shape
 
@@ -55,47 +59,65 @@ Nothing polls the database. Live per-step job progress is written to Redis, the 
 ## Quick start
 
 ```bash
-cp .env.storyloom-hybrid.example .env
+cp .env.example .env
 # fill in STORYLOOM_ENCRYPTION_KEY and BETTER_AUTH_SECRET: openssl rand -base64 32
-docker compose -f docker-compose.dev.yml up -d   # Redis; the database is a local file
 pnpm install
 pnpm db:migrate
-pnpm dev
+pnpm dev                                      # mock inference by default
 ```
 
-Open `http://localhost:4173`, create an account, and either import a book or open the built-in demo story. With `STORYLOOM_MODE=mock` no credentials or model downloads are needed.
+Open `http://localhost:4173`, create an account, and either generate a story from a prompt, import a book, or open the built-in demo story. With `STORYLOOM_MODE=mock` no credentials or model downloads are needed.
+
+## Story sources and reading
+
+The library accepts two source paths:
+
+- import EPUB, PDF or TXT while preserving the extracted chapter text;
+- request an original story and choose 1–12 chapters. A queued text-provider job first creates the complete narrative outline, then writes and stores every full chapter in order.
+
+Generated chapters become immutable source text as soon as each chapter completes. If the writer stops, retrying resumes from the first missing chapter rather than rewriting successful chapters. The saved prompt, requested chapter count, outline, provider route and model remain attached to the book as provenance.
+
+Every available chapter can be opened in **Read** mode before registries, voices, audio or images exist. Audiovisual augmentation remains a separate on-demand action, and a prepared chapter can switch between its source text and its performance.
 
 ## Deployment topologies
 
-**1. Everything on one machine** — `.env.storyloom-hybrid.example`
+**1. Everything on one machine** — `.env` + `.env.storyloom-hybrid`
 
-The app, a SQLite file, artifacts on disk, and hybrid inference: the language model on OpenRouter, speech, alignment and images on this machine. Only Redis has to be running.
+The app, a SQLite file, artifacts on disk, an in-process durable queue, and hybrid inference: the language model on OpenRouter, speech, alignment and images on this machine. No database or queue server is required.
 
 ```bash
-docker compose -f docker-compose.dev.yml up -d   # or: brew services start redis
+cp .env.example .env
+cp .env.storyloom-hybrid.example .env.storyloom-hybrid
 pnpm db:migrate && pnpm dev:hybrid
 ```
 
-`.env.storyloom-local.example` is the same shape with the language model on LM Studio too, so nothing at all leaves the machine.
+Use `.env.storyloom-local.example` as the overlay instead when the language model must run in LM Studio too, so nothing at all leaves the machine.
 
-**2. Full SaaS** — `.env.storyloom-cloud.example`
+**2. Full SaaS** — `.env` + `.env.storyloom-cloud`
 
-One small always-on box, Turso for the database, R2 for artifacts, all inference through OpenRouter with each account's own key. `STORYLOOM_WORKER_MODE=inline`, so the web process drains its own queue and no second machine is involved.
+One small always-on box, Turso for the database, R2 for artifacts, all inference through OpenRouter with each account's own key. Put Turso, Redis, R2 and auth settings in `.env`; copy `.env.storyloom-cloud.example` to `.env.storyloom-cloud` for models and policies. `STORYLOOM_WORKER_MODE=inline`, so the web process drains its own queue and no second machine is involved.
 
 **3. Deployed app, your own hardware doing the inference** — `.env.worker.example`
 
 The web deployment points at Turso and R2 with `STORYLOOM_WORKER_MODE=off`, so it only accepts and reports jobs. Your machine drains the queue against the same database and bucket:
 
 ```bash
-set -a && . ./.env.worker && set +a
-pnpm worker
+cp .env.worker.example .env
+cp .env.storyloom-hybrid.example .env.storyloom-hybrid
+pnpm worker:hybrid
 ```
 
 Media generated here is written to the shared bucket, so the deployed app serves it immediately. When your machine is off, jobs queue up and both the book page and `/jobs` report that no worker is connected — nothing hangs silently. This is also the migration path: switching to topology 2 later means changing the policies and turning the inline worker back on, not changing code.
 
 ## Configuration
 
-`.env.example` documents every setting. The ones that decide the topology:
+Configuration is layered deliberately:
+
+1. `.env` owns stable deployment information: database, Redis, storage, secrets, accounts and worker placement.
+2. `.env.storyloom-local`, `.env.storyloom-hybrid` or `.env.storyloom-cloud` owns only inference mode, capability policies, provider models and model concurrency.
+3. Variables exported by the host override both files.
+
+Vite applies this inheritance for `dev:*` and `build:*`; the matching `worker:*` commands do the same. `db:migrate` reads only `.env`, because migrations need infrastructure credentials but no inference model. The variables that decide the topology:
 
 | Variable | Meaning |
 | --- | --- |
@@ -103,7 +125,7 @@ Media generated here is written to the shared bucket, so the deployed app serves
 | `STORYLOOM_WORKER_MODE` | `inline` (worker inside the web process), `external`, `off` |
 | `DATABASE_URL` | `file:…` for one machine, `libsql://…turso.io` when distributed |
 | `DATABASE_AUTH_TOKEN` | Required for a `libsql://` URL |
-| `REDIS_URL` | Shared by the web tier and the worker |
+| `REDIS_URL` | Optional on one machine; required as soon as the worker is a separate process |
 | `STORYLOOM_QUEUE_PREFIX` | Namespaces Redis keys; must match across a deployment's web tier and workers |
 | `STORAGE_DRIVER` | `fs` or `s3`; defaults to `s3` when `S3_BUCKET` is set |
 | `STORYLOOM_ENCRYPTION_KEY` | Encrypts stored provider keys. Changing it makes them unreadable |
@@ -127,10 +149,19 @@ In `local` mode Storyloom owns the heavy-model lifecycle and executes one phase 
 ## Commands
 
 ```bash
-pnpm dev            # web app
-pnpm worker         # standalone queue consumer
+pnpm dev            # web app, base .env (mock unless STORYLOOM_MODE is exported)
+pnpm dev:local      # .env + .env.storyloom-local
+pnpm dev:hybrid     # .env + .env.storyloom-hybrid
+pnpm dev:cloud      # .env + .env.storyloom-cloud
+pnpm worker         # standalone queue consumer using base .env
+pnpm worker:local   # base + local profile
+pnpm worker:hybrid  # base + hybrid profile
+pnpm worker:cloud   # base + cloud profile
+pnpm start:local    # run a built server with base + local profile
+pnpm start:hybrid   # run a built server with base + hybrid profile
+pnpm start:cloud    # run a built server with base + cloud profile
 pnpm db:generate    # write a migration after changing the Drizzle schema
-pnpm db:migrate     # apply migrations
+pnpm db:migrate     # apply migrations using database settings from .env
 pnpm check
 pnpm test
 pnpm build && pnpm start

@@ -40,8 +40,12 @@ function startInlineWorker() {
 
   void (async () => {
     try {
-      const { startWorker } = await import('$lib/server/queue/worker');
+      const [{ startWorker }, { getQueueDriver }] = await Promise.all([
+        import('$lib/server/queue/worker'),
+        import('$lib/server/queue/index')
+      ]);
       startWorker();
+      console.log(`[web] inline worker started on the ${getQueueDriver().kind} queue`);
     } catch (cause) {
       // A web server that cannot start its worker still serves the library and the job
       // history; it just cannot execute new work, which the dashboard reports.

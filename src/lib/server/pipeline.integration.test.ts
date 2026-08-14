@@ -6,19 +6,19 @@ import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 /**
- * End-to-end proof that a job survives the trip through Redis to a worker that shares
- * nothing with the producer except Postgres, Redis and object storage — which is exactly
- * the split between a cheap web box and a machine doing local inference.
+ * End-to-end proof that a job accepted by the producer is executed by a worker and its
+ * result observed back, over whichever queue the deployment selected.
  *
- * Skipped unless DATABASE_URL and REDIS_URL are present, so the default suite needs no
- * services. Start them with `docker compose -f docker-compose.dev.yml up -d`.
+ * It is self-contained: a scratch SQLite file and a scratch data directory, both
+ * discarded afterwards, so it needs no services and always runs. Setting REDIS_URL runs
+ * the same assertions against the Redis driver instead of the in-process one, which is
+ * how the distributed path gets covered.
  */
-const enabled = Boolean(process.env.DATABASE_URL && process.env.REDIS_URL);
-const suite = enabled ? describe : describe.skip;
+const usesRedis = Boolean(process.env.REDIS_URL);
 
 let dataDir = '';
 
-suite('distributed generation pipeline', () => {
+describe(`generation pipeline (${usesRedis ? 'redis' : 'in-process'} queue)`, () => {
   let owner = '';
   let stranger = '';
   let bookId = '';
@@ -31,9 +31,8 @@ suite('distributed generation pipeline', () => {
     store: typeof import('./store');
     jobs: typeof import('./jobs');
     orchestrator: typeof import('./orchestrator');
-    queues: typeof import('./queue/queues');
+    queue: typeof import('./queue/index');
     worker: typeof import('./queue/worker');
-    connection: typeof import('./queue/connection');
     accounts: typeof import('./accounts');
   };
 
@@ -43,10 +42,16 @@ suite('distributed generation pipeline', () => {
     process.env.STORAGE_DRIVER = 'fs';
     process.env.STORYLOOM_DATA_DIR = dataDir;
     process.env.STORYLOOM_ENCRYPTION_KEY = 'integration-encryption-key-long-enough-01';
-    process.env.STORYLOOM_WORKER_MODE = 'external';
+    // A scratch database, never the developer's own.
+    process.env.DATABASE_URL = `file:${join(dataDir, 'test.db')}`;
+    delete process.env.DATABASE_AUTH_TOKEN;
+    // The in-process queue is only legal when this process is also the worker.
+    process.env.STORYLOOM_WORKER_MODE = usesRedis ? 'external' : 'inline';
     // A private Redis namespace, so a development server pointed at the same Redis
     // cannot drain the queue this test is asserting on.
     process.env.STORYLOOM_QUEUE_PREFIX = `storyloom-test-${randomUUID()}`;
+
+    await migrateScratchDatabase();
 
     modules = {
       db: await import('./db/client'),
@@ -54,9 +59,8 @@ suite('distributed generation pipeline', () => {
       store: await import('./store'),
       jobs: await import('./jobs'),
       orchestrator: await import('./orchestrator'),
-      queues: await import('./queue/queues'),
+      queue: await import('./queue/index'),
       worker: await import('./queue/worker'),
-      connection: await import('./queue/connection'),
       accounts: await import('./accounts')
     };
 
@@ -76,8 +80,7 @@ suite('distributed generation pipeline', () => {
       for (const id of [owner, stranger]) {
         if (id) await db.delete(modules.schema.user).where(eq(modules.schema.user.id, id));
       }
-      await modules.queues.closeQueues();
-      await modules.connection.closeRedis();
+      await modules.queue.closeQueue();
       await modules.db.closeDb();
     }
     await rm(dataDir, { recursive: true, force: true });
@@ -112,7 +115,9 @@ suite('distributed generation pipeline', () => {
     const job = await modules.jobs.startGenerationJob(owner, { kind: 'chapter', bookId, chapterId: manifest.chapters[0].id });
     expect(job.status).toBe('queued');
 
-    const snapshot = await modules.queues.queueSnapshot();
+    const driver = modules.queue.getQueueDriver();
+    expect(driver.kind).toBe(usesRedis ? 'redis' : 'memory');
+    const snapshot = await driver.snapshot();
     expect(snapshot.waiting).toBe(1);
     // No worker has been started yet, and the dashboard is able to say so rather than
     // leaving the job looking like a hang.
@@ -200,6 +205,21 @@ async function waitFor<T>(probe: () => Promise<T | null>, timeoutMs: number): Pr
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw new Error('Timed out waiting for the job to finish');
+}
+
+/** Builds the scratch schema from the same migrations a deployment applies. */
+async function migrateScratchDatabase() {
+  const [{ createClient }, { drizzle }, { migrate }] = await Promise.all([
+    import('@libsql/client'),
+    import('drizzle-orm/libsql'),
+    import('drizzle-orm/libsql/migrator')
+  ]);
+  const client = createClient({ url: process.env.DATABASE_URL! });
+  try {
+    await migrate(drizzle(client), { migrationsFolder: 'drizzle' });
+  } finally {
+    client.close();
+  }
 }
 
 const SAMPLE = `Capitolo I

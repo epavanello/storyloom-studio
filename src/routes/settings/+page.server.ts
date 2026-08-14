@@ -3,6 +3,7 @@ import type { Actions, PageServerLoad } from './$types';
 import { deleteProviderCredential, listCredentialHints, setProviderCredential } from '$lib/server/accounts';
 import { getConfig } from '$lib/server/config';
 import { queueHealth } from '$lib/server/jobs';
+import { getQueueDriver } from '$lib/server/queue/index';
 import { requireUser } from '$lib/server/session';
 
 export const load: PageServerLoad = async ({ locals }) => {
@@ -19,6 +20,7 @@ export const load: PageServerLoad = async ({ locals }) => {
       mode: config.mode,
       storage: config.storage.driver,
       workerMode: config.worker.mode,
+      queueDriver: getQueueDriver().kind,
       hasPlatformKey: Boolean(config.openRouterApiKey),
       /** Whether a cloud key is used at all on this deployment. */
       usesCloud: Object.values(config.policies).some((policy) => policy !== 'local-required') && config.mode !== 'mock' && config.mode !== 'local'

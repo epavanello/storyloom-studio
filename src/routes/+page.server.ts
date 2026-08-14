@@ -1,17 +1,67 @@
 import type { Actions, PageServerLoad } from './$types';
 import { fail, redirect } from '@sveltejs/kit';
-import { assertNoActiveJobs } from '$lib/server/jobs';
+import { StoryCreationRequestSchema } from '$lib/core/schemas';
+import { getConfig } from '$lib/server/config';
+import { buildRunContext, describeMissingCredentials } from '$lib/server/context';
+import { assertNoActiveJobs, startGenerationJob } from '$lib/server/jobs';
 import { ingestBook } from '$lib/server/orchestrator';
 import { requireUser } from '$lib/server/session';
+import { createStoryDraft } from '$lib/server/story';
 import { listBooks, listTrashedBooks, purgeBook, restoreBook, trashBook } from '$lib/server/store';
 
 export const load: PageServerLoad = async ({ locals }) => {
   const user = requireUser(locals);
   const [books, trashed] = await Promise.all([listBooks(user.id), listTrashedBooks(user.id)]);
-  return { books, trashed };
+  const config = getConfig();
+  const cloudPossible = config.mode === 'cloud'
+    || config.mode === 'hybrid' && config.policies.text !== 'local-required';
+  return {
+    books,
+    trashed,
+    storyGeneration: {
+      mode: config.mode,
+      cloudPossible,
+      provider: cloudPossible ? `OpenRouter · ${config.openRouterLlmModel}` : config.mode === 'mock' ? 'deterministic demo writer' : `local · ${config.localLlmModel}`
+    }
+  };
 };
 
 export const actions: Actions = {
+  generate: async ({ locals, request }) => {
+    const user = requireUser(locals);
+    const data = await request.formData();
+    const parsed = StoryCreationRequestSchema.safeParse({
+      prompt: data.get('prompt'),
+      chapterCount: data.get('chapterCount')
+    });
+    if (!parsed.success) return fail(400, {
+      generateMessage: parsed.error.issues[0]?.message ?? 'Describe the story and choose a valid number of chapters.',
+      generatePrompt: String(data.get('prompt') ?? ''),
+      generateChapterCount: String(data.get('chapterCount') ?? '3')
+    });
+
+    const preflight = await buildRunContext(user.id, 'new-generated-story');
+    const blocker = describeMissingCredentials(preflight);
+    if (blocker) return fail(400, {
+      generateMessage: blocker,
+      generatePrompt: parsed.data.prompt,
+      generateChapterCount: String(parsed.data.chapterCount)
+    });
+
+    let bookId: string;
+    try {
+      const book = await createStoryDraft(user.id, parsed.data);
+      await startGenerationJob(user.id, { kind: 'story', bookId: book.id });
+      bookId = book.id;
+    } catch (error) {
+      return fail(500, {
+        generateMessage: error instanceof Error ? error.message : 'The story could not be queued.',
+        generatePrompt: parsed.data.prompt,
+        generateChapterCount: String(parsed.data.chapterCount)
+      });
+    }
+    redirect(303, `/books/${bookId}`);
+  },
   upload: async ({ locals, request }) => {
     const user = requireUser(locals);
     const data = await request.formData();

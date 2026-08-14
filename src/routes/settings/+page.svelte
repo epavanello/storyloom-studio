@@ -3,6 +3,7 @@
 
   let { data, form } = $props();
   const openrouter = $derived(data.credentials.find((credential) => credential.provider === 'openrouter'));
+  const workerCommand = $derived(data.deployment.mode === 'mock' ? 'pnpm worker' : `pnpm worker:${data.deployment.mode}`);
 </script>
 
 <svelte:head><title>Settings · Storyloom</title></svelte:head>
@@ -50,14 +51,21 @@
       <div><dt>Artifact storage</dt><dd>{data.deployment.storage === 's3' ? 'S3-compatible object storage' : 'local filesystem'}</dd></div>
       <div><dt>Queue consumer</dt><dd>{data.deployment.workerMode === 'inline' ? 'inside the web process' : data.deployment.workerMode === 'external' ? 'separate worker process' : 'disabled here'}</dd></div>
       <div>
+        <dt>Queue</dt>
+        <dd>{data.deployment.queueDriver === 'redis' ? 'Redis' : 'in-process (no Redis)'}</dd>
+      </div>
+      <div>
         <dt>Worker</dt>
         <dd class="worker-status" class:online={data.queue?.hasWorker}>{data.queue?.hasWorker ? 'connected' : 'not connected'}</dd>
       </div>
     </dl>
+    {#if data.deployment.queueDriver === 'memory'}
+      <p class="settings-note">The queue lives in this process, so no broker is needed. Work already accepted survives a restart because it is re-queued from the database, but anything mid-render is reported as interrupted. Set <code>REDIS_URL</code> to move the queue to Redis, which is required as soon as the worker runs anywhere else.</p>
+    {/if}
     {#if data.queue && !data.queue.hasWorker}
       <p class="queue-warning">
         Nothing is draining the queue, so new work will wait.
-        {data.deployment.workerMode === 'inline' ? 'The web process should be running a worker — check its logs.' : 'Start `pnpm worker` on the machine that runs inference.'}
+        {data.deployment.workerMode === 'inline' ? 'The web process should be running a worker — check its logs.' : `Start \`${workerCommand}\` on the machine that runs inference.`}
       </p>
     {/if}
   </section>

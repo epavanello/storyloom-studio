@@ -8,6 +8,13 @@
       "when": 1786657732270,
       "tag": "0000_panoramic_sentinel",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1786693025620,
+      "tag": "0001_smiling_hemingway",
+      "breakpoints": true
     }
   ]
 }

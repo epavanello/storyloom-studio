@@ -38,6 +38,46 @@ export const ChapterSchema = z.object({
   characterCount: z.number().int().nonnegative()
 });
 
+export const StoryCreationRequestSchema = z.object({
+  prompt: z.string().trim().min(20, 'Describe the story in at least 20 characters.').max(4_000, 'Keep the story request under 4,000 characters.'),
+  chapterCount: z.coerce.number().int().min(1).max(12)
+});
+
+export const StoryOutlineChapterSchema = z.object({
+  order: z.number().int().nonnegative(),
+  title: z.string().trim().min(1),
+  synopsis: z.string().trim().min(1),
+  continuityNotes: z.string().trim().min(1)
+});
+
+export const StoryOutlineSchema = z.object({
+  title: z.string().trim().min(1),
+  premise: z.string().trim().min(1),
+  language: z.string().trim().min(1),
+  styleGuide: z.string().trim().min(1),
+  chapters: z.array(StoryOutlineChapterSchema).min(1).max(12)
+});
+
+export const GeneratedStoryChapterSchema = z.object({
+  title: z.string().trim().min(1),
+  /** A complete source chapter, not an outline or performance annotation. */
+  text: z.string().trim().min(1_200)
+});
+
+export const BookOriginSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('imported') }),
+  z.object({
+    kind: z.literal('generated'),
+    prompt: z.string(),
+    requestedChapterCount: z.number().int().min(1).max(12),
+    status: z.enum(['pending', 'generating', 'ready', 'failed']),
+    outline: StoryOutlineSchema.optional(),
+    provider: z.string().optional(),
+    model: z.string().optional(),
+    generatedAt: z.string().optional()
+  })
+]);
+
 export const CharacterSchema = z.object({
   id: z.string(),
   canonicalName: z.string(),
@@ -81,6 +121,7 @@ export const BookManifestSchema = z.object({
   id: z.string(),
   title: z.string(),
   sourceName: z.string(),
+  origin: BookOriginSchema.default({ kind: 'imported' }),
   createdAt: z.string(),
   chapters: z.array(ChapterSchema),
   characters: z.array(CharacterSchema).default([]),
@@ -175,7 +216,7 @@ export const GenerationJobStepSchema = z.object({
   detail: z.string().optional()
 });
 
-export const JobKindSchema = z.enum(['registry', 'chapter', 'chapter-audio', 'character-reference']);
+export const JobKindSchema = z.enum(['story', 'registry', 'chapter', 'chapter-audio', 'character-reference']);
 export const JobStatusSchema = z.enum(['queued', 'active', 'completed', 'failed', 'cancelled']);
 
 export const GenerationJobSchema = z.object({
@@ -215,7 +256,11 @@ export const QueueSnapshotSchema = z.object({
 
 export type ArtifactRef = z.infer<typeof ArtifactRefSchema>;
 export type BookManifest = z.infer<typeof BookManifestSchema>;
+export type BookOrigin = z.infer<typeof BookOriginSchema>;
 export type Chapter = z.infer<typeof ChapterSchema>;
+export type StoryCreationRequest = z.infer<typeof StoryCreationRequestSchema>;
+export type StoryOutline = z.infer<typeof StoryOutlineSchema>;
+export type GeneratedStoryChapter = z.infer<typeof GeneratedStoryChapterSchema>;
 export type Character = z.infer<typeof CharacterSchema>;
 export type ChapterPlan = z.infer<typeof ChapterPlanSchema>;
 export type RenderedChapter = z.infer<typeof RenderedChapterSchema>;

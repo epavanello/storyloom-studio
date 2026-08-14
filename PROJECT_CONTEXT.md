@@ -30,6 +30,8 @@ Il PoC deve privilegiare una verticale completa e credibile su uno o pochi capit
 
 L'utente importa un libro. Il sistema estrae testo e metadati, identifica capitoli o sezioni equivalenti e assegna identificatori stabili indipendenti dalle pagine del formato di origine.
 
+In alternativa all'import, l'utente può chiedere una storia originale e indicare il numero di capitoli. Il writer testuale progetta prima l'arco completo e genera poi il testo integrale di ogni capitolo in coda. Prompt, outline e provenienza del provider restano collegati al libro; ogni capitolo completato diventa testo sorgente immutabile e un retry riparte dal primo capitolo mancante. Questo testo è leggibile subito, senza attendere Character Registry, voci, audio o immagini, e alimenta in seguito la stessa pipeline di augmentation usata per i libri importati.
+
 La pagina non è l'unità narrativa primaria: in un EPUB cambia con dispositivo e impaginazione. Il sistema lavora quindi con capitoli e segmenti semantici, pur potendo presentare una navigazione simile alle pagine.
 
 ### Registri di continuità
@@ -182,7 +184,7 @@ Il perimetro iniziale escludeva esplicitamente multiutenza, database e infrastru
 Ne discendono quattro elementi strutturali:
 
 - **Un database SQLite via libSQL** come stato condiviso fra web tier e worker: un file locale quando tutto gira su una macchina, Turso quando web e calcolo stanno su macchine diverse. Nulla lo interroga a intervalli: il progresso vivo dei job sta in Redis e il database vede solo le transizioni durevoli.
-- **Redis con BullMQ** come coda, una sola. Un deploy è cloud **oppure** locale, mai entrambi: `STORYLOOM_MODE` lo decide e ogni job di quel deploy gira così. Ciò che è parametrico è quale processo drena la coda — dentro il processo web, un processo separato sulla stessa macchina, o un processo su un'altra macchina.
+- **Una coda sola**, dietro un driver: in-process quando tutto gira su una macchina, Redis con BullMQ quando il worker sta altrove. Il self-host non richiede quindi nessun servizio esterno; una configurazione impossibile, come coda in-process con worker staccato, viene rifiutata all'avvio. Un deploy è cloud **oppure** locale, mai entrambi: `STORYLOOM_MODE` lo decide e ogni job di quel deploy gira così. Ciò che è parametrico è quale processo drena la coda — dentro il processo web, un processo separato sulla stessa macchina, o un processo su un'altra macchina.
 - **Object storage S3-compatibile** per audio, immagini e schede identità, con lettura autorizzata contro la proprietà del libro.
 - **Sessioni e segregazione per utente**, con chiavi provider portate dall'utente e cifrate a riposo.
 
@@ -223,6 +225,8 @@ Una prima versione è davvero riuscita quando, usando un libro campione e almeno
 Il repository contiene una verticale dimostrativa SvelteKit con:
 
 - ingestione EPUB/PDF/TXT;
+- generazione resumibile da prompt di un manoscritto completo da 1–12 capitoli;
+- lettura del testo sorgente indipendente dalla disponibilità della performance audiovisiva;
 - manifest e schemi condivisi;
 - Character e Voice Registry;
 - pianificazione del capitolo;

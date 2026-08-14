@@ -94,6 +94,7 @@ export const books = sqliteTable('books', {
   schemaVersion: integer('schema_version').notNull().default(1),
   title: text('title').notNull(),
   sourceName: text('source_name').notNull(),
+  origin: text('origin', { mode: 'json' }).$type<BookManifest['origin']>().notNull().default({ kind: 'imported' }),
   registryStatus: text('registry_status', { enum: ['pending', 'processing', 'ready', 'failed'] }).notNull().default('pending'),
   characters: text('characters', { mode: 'json' }).$type<Character[]>().notNull().$defaultFn(() => []),
   worldElements: text('world_elements', { mode: 'json' }).$type<WorldElement[]>().notNull().$defaultFn(() => []),
@@ -126,7 +127,7 @@ export const renderedChapters = sqliteTable('rendered_chapters', {
 }, (table) => [primaryKey({ columns: [table.bookId, table.chapterId] })]);
 
 export const jobStatuses = ['queued', 'active', 'completed', 'failed', 'cancelled'] as const;
-export const jobKinds = ['registry', 'chapter', 'chapter-audio', 'character-reference'] as const;
+export const jobKinds = ['story', 'registry', 'chapter', 'chapter-audio', 'character-reference'] as const;
 
 /**
  * The durable record of a job. Live per-step progress lives in Redis instead, so a

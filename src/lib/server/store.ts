@@ -2,9 +2,12 @@ import { and, asc, desc, eq, isNotNull, isNull } from 'drizzle-orm';
 import {
   ArtifactRefSchema,
   BookManifestSchema,
+  ChapterSchema,
   RenderedChapterSchema,
   type ArtifactRef,
   type BookManifest,
+  type BookOrigin,
+  type Chapter,
   type Character,
   type RenderedChapter,
   type VoiceProfile,
@@ -23,6 +26,7 @@ export type BookSummary = {
   registryStatus: BookManifest['registryStatus'];
   chapterCount: number;
   characterCount: number;
+  origin: { kind: 'imported' } | { kind: 'generated'; status: Extract<BookOrigin, { kind: 'generated' }>['status']; requestedChapterCount: number };
   trashedAt: string | null;
 };
 
@@ -47,6 +51,7 @@ export async function createBook(userId: string, manifest: BookManifest) {
       schemaVersion: parsed.schemaVersion,
       title: parsed.title,
       sourceName: parsed.sourceName,
+      origin: parsed.origin,
       registryStatus: parsed.registryStatus,
       characters: parsed.characters,
       worldElements: parsed.worldElements,
@@ -82,6 +87,7 @@ export async function getManifest(userId: string, bookId: string): Promise<BookM
     id: book.id,
     title: book.title,
     sourceName: book.sourceName,
+    origin: book.origin,
     createdAt: book.createdAt.toISOString(),
     registryStatus: book.registryStatus,
     characters: book.characters,
@@ -108,6 +114,7 @@ async function summaries(userId: string, trashed: boolean): Promise<BookSummary[
       createdAt: books.createdAt,
       trashedAt: books.trashedAt,
       registryStatus: books.registryStatus,
+      origin: books.origin,
       characters: books.characters,
       chapterId: chapters.id
     })
@@ -131,7 +138,10 @@ async function summaries(userId: string, trashed: boolean): Promise<BookSummary[
       trashedAt: row.trashedAt?.toISOString() ?? null,
       registryStatus: row.registryStatus,
       chapterCount: row.chapterId ? 1 : 0,
-      characterCount: row.characters.length
+      characterCount: row.characters.length,
+      origin: row.origin.kind === 'generated'
+        ? { kind: 'generated', status: row.origin.status, requestedChapterCount: row.origin.requestedChapterCount }
+        : { kind: 'imported' }
     });
   }
   return [...found.values()];
@@ -139,6 +149,38 @@ async function summaries(userId: string, trashed: boolean): Promise<BookSummary[
 
 export const listBooks = (userId: string) => summaries(userId, false);
 export const listTrashedBooks = (userId: string) => summaries(userId, true);
+
+/** Updates only the provenance and display metadata of an AI-authored source. */
+export async function saveGeneratedStoryState(
+  userId: string,
+  bookId: string,
+  changes: { origin: Extract<BookOrigin, { kind: 'generated' }>; title?: string; sourceName?: string }
+) {
+  const db = getDb();
+  const result = await db
+    .update(books)
+    .set({ ...changes, updatedAt: new Date() })
+    .where(and(eq(books.id, bookId), eq(books.userId, userId), isNull(books.trashedAt)));
+  if (result.rowsAffected === 0) throw new BookNotFoundError(bookId);
+}
+
+/**
+ * Appends one complete generated chapter. Existing source chapters are never rewritten:
+ * a retried story job resumes from the first missing order instead.
+ */
+export async function saveGeneratedChapter(userId: string, bookId: string, value: Chapter) {
+  const parsed = ChapterSchema.parse(value);
+  await assertBookOwner(userId, bookId);
+  const db = getDb();
+  const existing = await db
+    .select({ id: chapters.id })
+    .from(chapters)
+    .where(and(eq(chapters.bookId, bookId), eq(chapters.order, parsed.order)))
+    .limit(1);
+  if (existing.length) return false;
+  await db.insert(chapters).values({ bookId, ...parsed });
+  return true;
+}
 
 /** Confirms ownership without paying for the chapter text. */
 export async function assertBookOwner(userId: string, bookId: string) {

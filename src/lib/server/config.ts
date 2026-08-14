@@ -176,8 +176,10 @@ export function requireDatabaseUrl() {
   return databaseUrl;
 }
 
-export function requireRedisUrl() {
-  const { redisUrl } = getConfig();
-  if (!redisUrl) throw new Error('REDIS_URL is not set. The job queue needs Redis to accept and dispatch work.');
-  return redisUrl;
+/**
+ * Redis is optional. Without it the queue runs in-process, which is only viable when
+ * this process is also the worker; `getQueueDriver` enforces that.
+ */
+export function usesRedisQueue() {
+  return Boolean(getConfig().redisUrl);
 }
