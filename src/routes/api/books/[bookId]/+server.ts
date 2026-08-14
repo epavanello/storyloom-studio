@@ -1,17 +1,21 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { jobsForBook } from '$lib/server/jobs';
+import { assertNoActiveJobs } from '$lib/server/jobs';
+import { requireUser } from '$lib/server/session';
 import { trashBook } from '$lib/server/store';
 
-export const DELETE: RequestHandler = async ({ params }) => {
+/** Recoverable deletion: the book leaves the library, its rows and artifacts remain. */
+export const DELETE: RequestHandler = async ({ locals, params }) => {
+  const user = requireUser(locals);
   try {
-    const jobs = await jobsForBook(params.bookId);
-    if (jobs.some((job) => job.status === 'queued' || job.status === 'running')) {
-      return json({ error: 'Wait for active generation jobs before deleting this book.' }, { status: 409 });
-    }
-    await trashBook(params.bookId);
+    await assertNoActiveJobs(user.id, params.bookId);
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : 'The book still has active work' }, { status: 409 });
+  }
+  try {
+    await trashBook(user.id, params.bookId);
     return json({ deleted: true, recoverable: true });
   } catch (error) {
-    return json({ error: error instanceof Error ? error.message : 'Book deletion failed' }, { status: 500 });
+    return json({ error: error instanceof Error ? error.message : 'Book deletion failed' }, { status: 400 });
   }
 };

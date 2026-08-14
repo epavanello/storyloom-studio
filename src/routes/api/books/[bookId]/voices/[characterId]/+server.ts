@@ -2,7 +2,8 @@ import { error, json } from '@sveltejs/kit';
 import { z } from 'zod';
 import type { RequestHandler } from './$types';
 import { getConfig } from '$lib/server/config';
-import { getManifest, saveManifest } from '$lib/server/store';
+import { requireUser } from '$lib/server/session';
+import { getManifest, saveBookRegistry } from '$lib/server/store';
 import { chatterboxVoiceOptions, assignVoiceProfiles } from '$lib/server/voices';
 
 const RequestSchema = z.object({ voiceId: z.string().regex(/^[a-z0-9-]+$/) });
@@ -12,14 +13,15 @@ const speechIdentity = {
   voiceOptions: chatterboxVoiceOptions
 };
 
-export const POST: RequestHandler = async ({ params, request }) => {
+export const POST: RequestHandler = async ({ locals, params, request }) => {
+  const user = requireUser(locals);
   const config = getConfig();
   if (!config.technicalUi || config.localTtsEngine !== 'chatterbox-v3') error(404, 'Voice lab is disabled');
   const { voiceId } = RequestSchema.parse(await request.json());
   const option = chatterboxVoiceOptions.find((item) => item.id === voiceId);
   if (!option) error(400, 'Unknown synthetic voice');
 
-  const manifest = await getManifest(params.bookId);
+  const manifest = await getManifest(user.id, params.bookId);
   const target = params.characterId === 'narrator'
     ? null
     : manifest.characters.find((character) => character.id === params.characterId);
@@ -40,6 +42,6 @@ export const POST: RequestHandler = async ({ params, request }) => {
   profile.model = speechIdentity.model;
   profile.description = option.description;
   profile.gender = option.gender;
-  await saveManifest(manifest);
+  await saveBookRegistry(params.bookId, { voices: manifest.voices });
   return json(profile);
 };

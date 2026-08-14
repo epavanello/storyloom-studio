@@ -1,11 +1,12 @@
 <script lang="ts">
   import { goto, invalidateAll } from '$app/navigation';
   import { onMount, tick } from 'svelte';
-  import type { GenerationJob, RenderedChapter } from '$lib/core/schemas';
+  import type { GenerationJob, QueueSnapshot, RenderedChapter } from '$lib/core/schemas';
 
   let { data } = $props();
   let rendered = $state<RenderedChapter | null>(null);
   let jobs = $state<GenerationJob[]>([]);
+  let queue = $state<QueueSnapshot | null>(null);
   let requestError = $state('');
   let activeIndex = $state(0);
   let activeTimeMs = $state(0);
@@ -13,6 +14,7 @@
   let audio = $state<HTMLAudioElement>();
   let scriptScroll = $state<HTMLDivElement>();
   let loadedChapterId = $state<string>();
+  let viewMode = $state<'read' | 'performance'>('read');
   let playbackChangeId = 0;
 
   const chapter = $derived(data.book.chapters.find((item) => item.id === data.chapterId));
@@ -20,12 +22,17 @@
   const globalTime = $derived((activeUtterance?.startMs ?? 0) + activeTimeMs);
   const activeVisual = $derived(rendered?.visuals.filter((visual) => visual.startMs <= globalTime).at(-1) ?? rendered?.visuals[0]);
   const progress = $derived(rendered ? Math.min(100, globalTime / rendered.totalDurationMs * 100) : 0);
-  const activeJobs = $derived(jobs.filter((job) => job.status === 'queued' || job.status === 'running'));
+  const activeJobs = $derived(jobs.filter((job) => job.status === 'queued' || job.status === 'active'));
+  const storyJobActive = $derived(activeJobs.some((job) => job.kind === 'story'));
+  const storySourceReady = $derived(data.book.origin.kind !== 'generated' || data.book.origin.status === 'ready');
+  const workerCommand = $derived(data.runtime.mode === 'mock' ? 'pnpm worker' : `pnpm worker:${data.runtime.mode}`);
   const chapterJobActive = $derived(activeJobs.some((job) => (job.kind === 'chapter' || job.kind === 'chapter-audio') && job.chapterId === data.chapterId));
   const audioJobActive = $derived(activeJobs.some((job) => job.kind === 'chapter-audio' && job.chapterId === data.chapterId));
   const registryJobActive = $derived(activeJobs.some((job) => job.kind === 'registry'));
-  const latestRelevantJob = $derived(jobs.find((job) => ((job.kind === 'chapter' || job.kind === 'chapter-audio') && job.chapterId === data.chapterId) || job.kind === 'registry' || job.kind === 'character-reference'));
+  const latestRelevantJob = $derived(jobs.find((job) => job.kind === 'story' || ((job.kind === 'chapter' || job.kind === 'chapter-audio') && job.chapterId === data.chapterId) || job.kind === 'registry' || job.kind === 'character-reference'));
   const failedJob = $derived(latestRelevantJob?.status === 'failed' ? latestRelevantJob : undefined);
+  // Work queued with nothing draining it would wait forever and look like a hang.
+  const stranded = $derived(Boolean(activeJobs.length && queue && !queue.hasWorker));
   const visualReferencesOutdated = $derived(
     data.book.characters.some((character) => !character.referenceImages.some((reference) => reference.styleId === data.book.visualStyle.id))
     || data.book.worldElements.some((element) => !element.referenceImages.some((reference) => reference.styleId === data.book.visualStyle.id))
@@ -43,11 +50,13 @@
       activeIndex = 0;
       activeTimeMs = 0;
       playing = false;
+      viewMode = nextRendered ? 'performance' : 'read';
     }
   });
 
   $effect(() => {
     jobs = data.jobs;
+    queue = data.queue;
   });
 
   $effect(() => {
@@ -75,12 +84,14 @@
   async function refreshJobs() {
     const hadActiveJobs = activeJobs.length > 0;
     try {
-      const response = await fetch(`/api/books/${data.book.id}/jobs`, { cache: 'no-store' });
+      const response = await fetch(`/api/jobs?bookId=${encodeURIComponent(data.book.id)}`, { cache: 'no-store' });
       if (!response.ok) return;
-      jobs = await response.json();
-      if (hadActiveJobs && !jobs.some((job) => job.status === 'queued' || job.status === 'running')) await invalidateAll();
+      const payload = await response.json() as { jobs: GenerationJob[]; queue: QueueSnapshot };
+      jobs = payload.jobs;
+      queue = payload.queue;
+      if (hadActiveJobs && !jobs.some((job) => job.status === 'queued' || job.status === 'active')) await invalidateAll();
     } catch {
-      // A transient polling failure should not hide the last persisted progress.
+      // A transient polling failure should not hide the last reported progress.
     }
   }
 
@@ -96,6 +107,10 @@
 
   async function prepareRegistry() {
     await request(`/api/books/${data.book.id}/registry`);
+  }
+
+  async function retryStory() {
+    await request(`/api/books/${data.book.id}/story`);
   }
 
   async function prepareChapter() {
@@ -241,15 +256,22 @@
       {/each}
     </nav>
     <div class="runtime-card"><span><i></i> Runtime · {data.runtime.mode}</span><strong>{data.runtime.mode === 'mock' ? 'Demo provider' : data.runtime.text}</strong><small>{data.runtime.mode === 'mock' ? 'Configure local or cloud models in .env' : `${data.runtime.speech} · ${data.runtime.image} · ${data.runtime.alignment}`}</small></div>
-    {#if data.runtime.technicalUi}<button class="danger-button" onclick={deleteBook} disabled={activeJobs.length > 0}>Delete book</button>{/if}
+    <nav class="side-links"><a href="/jobs">Job queue</a><a href="/settings">Settings</a></nav>
+    {#if data.runtime.technicalUi}<button class="danger-button" onclick={deleteBook} disabled={activeJobs.length > 0}>Move book to trash</button>{/if}
   </aside>
 
   <main class="studio-main">
     <header class="studio-header">
-      <div><p class="eyebrow">Chapter {chapter ? chapter.order + 1 : ''}</p><h1>{chapter?.title}</h1></div>
+      <div><p class="eyebrow">{chapter ? `Chapter ${chapter.order + 1}` : 'Source manuscript'}</p><h1>{chapter?.title ?? data.book.title}</h1></div>
       <div class="header-actions">
-        <span class:ready={data.book.registryStatus === 'ready' && !visualReferencesOutdated} class="registry-badge">{data.book.registryStatus === 'ready' ? visualReferencesOutdated ? 'Visual references need refresh' : '✓ Continuity registries ready' : 'Continuity registries pending'}</span>
-        {#if data.runtime.technicalUi}
+        {#if rendered && chapter}
+          <div class="reading-mode-switch" aria-label="Chapter view">
+            <button class:active={viewMode === 'read'} onclick={() => viewMode = 'read'}>Read</button>
+            <button class:active={viewMode === 'performance'} onclick={() => viewMode = 'performance'}>Performance</button>
+          </div>
+        {/if}
+        {#if chapter}<span class:ready={data.book.registryStatus === 'ready' && !visualReferencesOutdated} class="registry-badge">{data.book.registryStatus === 'ready' ? visualReferencesOutdated ? 'Visual references need refresh' : '✓ Continuity registries ready' : 'Continuity registries pending'}</span>{/if}
+        {#if data.runtime.technicalUi && chapter && storySourceReady}
           {#if data.book.registryStatus !== 'ready'}
             <button class="secondary-button" onclick={prepareRegistry} disabled={registryJobActive}>Build registry</button>
           {:else if visualReferencesOutdated}
@@ -262,11 +284,14 @@
 
     {#if activeJobs.length}
       <section class="jobs-panel" aria-live="polite">
-        <div class="jobs-heading"><div class="spinner"></div><div><strong>Storyloom is still working</strong><span>Progress survives a browser reload. {data.runtime.serialized ? 'Jobs share one memory-safe local queue.' : 'Jobs can run concurrently in this mode.'}</span></div></div>
+        <div class="jobs-heading"><div class="spinner"></div><div><strong>Storyloom is still working</strong><span>Progress is held in the queue, so it survives a browser reload and a server restart.</span></div></div>
+        {#if stranded}
+          <p class="queue-warning">No worker is draining the queue, so this job will wait until one is. {data.workerMode === 'inline' ? 'The web process should be running a worker — check its logs.' : `Start \`${workerCommand}\` on the machine that runs inference.`}</p>
+        {/if}
         {#each activeJobs as job}
           <article class="job-card">
             <div class="job-summary">
-              <div><strong>{job.kind === 'registry' ? 'Continuity registries' : job.kind === 'character-reference' ? `Character reference · ${data.book.characters.find((character) => character.id === job.characterId)?.canonicalName ?? job.characterId}` : job.kind === 'chapter-audio' ? `Audio · ${data.book.chapters.find((item) => item.id === job.chapterId)?.title ?? 'Chapter'}` : data.book.chapters.find((item) => item.id === job.chapterId)?.title ?? 'Chapter performance'}</strong><span>{job.status === 'queued' ? `Queued${job.queuePosition ? ` · position ${job.queuePosition}` : ''}` : 'Generating now'}</span></div>
+              <div><strong>{job.kind === 'story' ? 'Writing the complete source story' : job.kind === 'registry' ? 'Continuity registries' : job.kind === 'character-reference' ? `Character reference · ${data.book.characters.find((character) => character.id === job.characterId)?.canonicalName ?? job.characterId}` : job.kind === 'chapter-audio' ? `Audio · ${data.book.chapters.find((item) => item.id === job.chapterId)?.title ?? 'Chapter'}` : data.book.chapters.find((item) => item.id === job.chapterId)?.title ?? 'Chapter performance'}</strong><span>{job.status === 'queued' ? `Queued${job.queuePosition ? ` · position ${job.queuePosition}` : ''}` : 'Generating now'}</span></div>
               <b>{jobProgress(job)}%</b>
             </div>
             <div class="job-progress"><i style={`width: ${jobProgress(job)}%`}></i></div>
@@ -286,7 +311,28 @@
       <section class="error-panel"><strong>Something stopped the pipeline</strong><span>{requestError || failedJob?.error}</span></section>
     {/if}
 
-    {#if rendered}
+    {#if chapter && viewMode === 'read'}
+      <section class="source-reader">
+        <div class="source-reader-heading">
+          <div><span>{data.book.origin.kind === 'generated' ? 'AI-authored source text' : 'Original source text'}</span><small>{chapter.text.trim().split(/\s+/).length.toLocaleString()} words · media not required</small></div>
+          {#if rendered}<button class="secondary-button" onclick={() => viewMode = 'performance'}>Open performance →</button>{/if}
+        </div>
+        <article class="source-prose">
+          <h2>{chapter.title}</h2>
+          {#each chapter.text.split(/\n{2,}/) as paragraph}<p>{paragraph}</p>{/each}
+        </article>
+        {#if !rendered && data.runtime.technicalUi}
+          <div class="augment-callout">
+            <div><strong>{storySourceReady ? 'Ready to augment this chapter?' : 'Finish the source manuscript first'}</strong><span>{storySourceReady ? 'Voices, acting directions and scenes are generated separately. This readable source text will not be rewritten.' : 'Completed chapters are already safe and readable. Resume to generate only the missing chapters.'}</span></div>
+            {#if storySourceReady}
+              <button class="primary-button" onclick={prepareChapter} disabled={chapterJobActive}>{chapterJobActive ? 'Chapter queued or generating…' : 'Generate augmented chapter'} <span>→</span></button>
+            {:else}
+              <button class="primary-button" onclick={retryStory} disabled={storyJobActive}>{storyJobActive ? 'Story generation in progress…' : 'Resume story generation'} <span>→</span></button>
+            {/if}
+          </div>
+        {/if}
+      </section>
+    {:else if rendered}
       <section class="experience-grid">
         <div class="visual-stage">
           {#if activeVisual}<img src={activeVisual.image.path} alt={activeVisual.cue.prompt} />{/if}
@@ -320,18 +366,18 @@
         <span class="timecode">{formatTime(rendered.totalDurationMs)}</span>
         <span class="voice-chip">◉ {activeUtterance?.voice?.voiceId ?? (activeUtterance?.utterance.speakerCharacterId ? 'Character voice' : 'Narrator')}</span>
       </section>
-    {:else}
+    {:else if !chapter}
       <section class="empty-experience">
         <div class="empty-art"><span>✦</span><i></i><i></i><i></i></div>
-        <p class="eyebrow">On-demand chapter</p>
-        <h2>Ready for its first performance</h2>
-        <p>The director will read the complete chapter, assign voices and emotion, choose visual beats, then generate synchronized assets.</p>
-        {#if data.runtime.technicalUi}<button class="primary-button wide" onclick={prepareChapter} disabled={chapterJobActive}>{chapterJobActive ? 'Chapter queued or generating…' : 'Prepare this chapter'} <span>→</span></button>{/if}
-        <div class="pipeline-preview"><span>Understand</span><b>→</b><span>Direct voices</span><b>→</b><span>Stage scenes</span><b>→</b><span>Synchronize</span></div>
+        <p class="eyebrow">Generative manuscript</p>
+        <h2>{storyJobActive ? 'The writer is building your story' : 'The manuscript is incomplete'}</h2>
+        <p>{storyJobActive ? 'Storyloom is designing the full arc and writing each complete source chapter in order. The book will become readable before any voice or image is required.' : `No complete chapter is available yet. ${data.book.origin.kind === 'generated' ? `${data.book.chapters.length} of ${data.book.origin.requestedChapterCount} chapters are safely stored.` : ''}`}</p>
+        {#if data.book.origin.kind === 'generated' && !storyJobActive}<button class="primary-button wide" onclick={retryStory}>Resume story generation <span>→</span></button>{/if}
+        <div class="pipeline-preview"><span>Outline</span><b>→</b><span>Write chapters</span><b>→</b><span>Read</span><b>→</b><span>Augment on demand</span></div>
       </section>
     {/if}
 
-    <section class="character-section">
+    {#if data.book.chapters.length}<section class="character-section">
       <div class="section-title"><div><p class="eyebrow">Source of truth</p><h2>Character registry</h2></div><span>{data.book.characters.length} locked identities</span></div>
       {#if data.book.characters.length}
         <div class="character-row">
@@ -344,9 +390,9 @@
           {/each}
         </div>
       {:else}
-        <div class="registry-empty"><span>Characters will appear here after the registry pass.</span>{#if data.runtime.technicalUi}<button class="text-button" onclick={prepareRegistry} disabled={registryJobActive}>Build character registry</button>{/if}</div>
+        <div class="registry-empty"><span>Characters will appear here after the registry pass.</span>{#if data.runtime.technicalUi && storySourceReady}<button class="text-button" onclick={prepareRegistry} disabled={registryJobActive}>Build character registry</button>{/if}</div>
       {/if}
-    </section>
+    </section>{/if}
 
     {#if data.runtime.technicalUi && data.voiceCandidates.length}
       <section class="character-section voice-lab-section">

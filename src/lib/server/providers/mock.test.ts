@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { CharacterSchema, ChapterPlanSchema } from '$lib/core/schemas';
-import { validateChapterPlan } from '$lib/core/plan';
+import { CharacterSchema, ChapterPlanSchema } from '../../core/schemas';
+import { validateChapterPlan } from '../../core/plan';
 import { MockStructuredProvider } from './mock';
 
 const CharacterPatchSchema = z.object({ characters: z.array(CharacterSchema) });

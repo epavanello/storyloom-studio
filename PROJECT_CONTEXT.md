@@ -30,6 +30,8 @@ Il PoC deve privilegiare una verticale completa e credibile su uno o pochi capit
 
 L'utente importa un libro. Il sistema estrae testo e metadati, identifica capitoli o sezioni equivalenti e assegna identificatori stabili indipendenti dalle pagine del formato di origine.
 
+In alternativa all'import, l'utente può chiedere una storia originale e indicare il numero di capitoli. Il writer testuale progetta prima l'arco completo e genera poi il testo integrale di ogni capitolo in coda. Prompt, outline e provenienza del provider restano collegati al libro; ogni capitolo completato diventa testo sorgente immutabile e un retry riparte dal primo capitolo mancante. Questo testo è leggibile subito, senza attendere Character Registry, voci, audio o immagini, e alimenta in seguito la stessa pipeline di augmentation usata per i libri importati.
+
 La pagina non è l'unità narrativa primaria: in un EPUB cambia con dispositivo e impaginazione. Il sistema lavora quindi con capitoli e segmenti semantici, pur potendo presentare una navigazione simile alle pagine.
 
 ### Registri di continuità
@@ -136,7 +138,9 @@ Il libro viene analizzato quanto basta per costruire struttura e registri, ma au
 
 ### Local-first, non local-only
 
-Applicazione, libro, registri, cache, artifact e orchestrazione risiedono sul Mac. Ogni capacità può essere locale, cloud o ibrida, purché il passaggio al cloud sia esplicito, registrato e compatibile con la policy di privacy del libro.
+Ogni capacità può essere locale, cloud o ibrida, purché il passaggio al cloud sia esplicito, registrato e compatibile con la policy di privacy del libro.
+
+Dopo l'estensione di perimetro descritta più sotto, «local-first» non significa più che tutto risiede necessariamente sul Mac: significa che un deploy può essere configurato perché l'inferenza giri su una macchina propria, e in quel caso il testo del libro non raggiunge nessun provider cloud. Lo stato condiviso (registri, piani, job) e gli artifact vivono nel database e nell'object storage del deploy: entrambi stanno dietro un driver, così la stessa base di codice serve un file locale su un Mac e un servizio gestito quando interfaccia e calcolo devono stare su macchine diverse.
 
 Locale e cloud devono condividere i contratti funzionali, non necessariamente gli stessi modelli o pesi. Il routing deve scegliere provider che soddisfano i requisiti qualitativi; non deve degradare silenziosamente verso un provider che ignora reference, timestamp o altri vincoli obbligatori.
 
@@ -173,22 +177,32 @@ Le priorità qualitative sono, nell'ordine:
 
 Una modalità non è considerata funzionante finché non viene provata end-to-end con i provider configurati. La presenza di un adapter o di un endpoint non equivale a una validazione reale.
 
-## Cosa non è il PoC
+## Estensione di perimetro: da PoC locale a servizio deployabile
 
-Il perimetro iniziale non comprende:
+Il perimetro iniziale escludeva esplicitamente multiutenza, database e infrastruttura distribuita. Su richiesta esplicita del proprietario del progetto questi tre elementi sono ora **dentro** il perimetro, con una motivazione precisa: poter deployare l'interfaccia web e le API su un server economico e sempre acceso, e far eseguire il carico di inferenza a un worker separato — sulla macchina del proprietario quando serve inferenza locale, oppure nello stesso deploy quando si punta a modelli remoti.
+
+Ne discendono quattro elementi strutturali:
+
+- **Un database SQLite via libSQL** come stato condiviso fra web tier e worker: un file locale quando tutto gira su una macchina, Turso quando web e calcolo stanno su macchine diverse. Nulla lo interroga a intervalli: il progresso vivo dei job sta in Redis e il database vede solo le transizioni durevoli.
+- **Una coda sola**, dietro un driver: in-process quando tutto gira su una macchina, Redis con BullMQ quando il worker sta altrove. Il self-host non richiede quindi nessun servizio esterno; una configurazione impossibile, come coda in-process con worker staccato, viene rifiutata all'avvio. Un deploy è cloud **oppure** locale, mai entrambi: `STORYLOOM_MODE` lo decide e ogni job di quel deploy gira così. Ciò che è parametrico è quale processo drena la coda — dentro il processo web, un processo separato sulla stessa macchina, o un processo su un'altra macchina.
+- **Object storage S3-compatibile** per audio, immagini e schede identità, con lettura autorizzata contro la proprietà del libro.
+- **Sessioni e segregazione per utente**, con chiavi provider portate dall'utente e cifrate a riposo.
+
+### Cosa resta fuori
 
 - generazione preventiva dell'intero libro;
 - produzione cinematografica o video animato continuo;
 - coerenza perfetta garantita per qualunque stile e numero di personaggi;
-- piattaforma multiutente o collaborazione editoriale;
+- collaborazione editoriale fra più utenti sullo stesso libro;
 - marketplace, pagamenti, DRM o distribuzione commerciale;
 - gestione completa dei diritti sulle opere, voci o likeness;
 - editing audio professionale completo;
-- database e infrastruttura distribuita;
 - orchestratore universale capace di eseguire workflow arbitrari;
-- equivalenza esatta tra i modelli locali e quelli cloud.
+- equivalenza esatta tra i modelli locali e quelli cloud;
+- esecuzione scelta per singolo account: dove gira un job è una proprietà del deploy, non dell'utente;
+- runner di terze parti non fidati: un worker ha credenziali dirette al database e a Redis, quindi può essere affidato solo a chi è legittimato a vedere i dati di tutti gli account.
 
-Questi elementi potranno essere aggiunti soltanto dopo aver validato la verticale principale.
+L'estensione di perimetro non cambia le priorità qualitative: la verticale creativa resta il criterio di successo, e l'infrastruttura esiste per renderla distribuibile, non per sostituirla.
 
 ## Criteri di successo del PoC
 
@@ -208,14 +222,18 @@ Una prima versione è davvero riuscita quando, usando un libro campione e almeno
 
 ## Stato attuale del repository
 
-Il repository contiene già una verticale dimostrativa SvelteKit con:
+Il repository contiene una verticale dimostrativa SvelteKit con:
 
 - ingestione EPUB/PDF/TXT;
+- generazione resumibile da prompt di un manoscritto completo da 1–12 capitoli;
+- lettura del testo sorgente indipendente dalla disponibilità della performance audiovisiva;
 - manifest e schemi condivisi;
 - Character e Voice Registry;
 - pianificazione del capitolo;
 - orchestratore e routing per capacità;
-- persistenza su filesystem;
+- persistenza su SQLite/libSQL e artifact su object storage, entrambi dietro un driver (file locale o servizio gestito);
+- coda BullMQ su Redis, con worker avviabile dentro il processo web o come processo separato;
+- account, sessioni e segregazione dei dati per utente;
 - player con utterance sequenziali e cambi scena;
 - provider demo deterministici;
 - adapter iniziali per endpoint compatibili con OpenAI.
@@ -224,7 +242,7 @@ Questa base dimostra la forma del sistema, ma non ancora la qualità del prodott
 
 - il Character Registry della demo usa euristiche semplici e produce falsi positivi;
 - l'allineamento disponibile è approssimativo, non un forced alignment reale;
-- TTS, forced alignment e immagini reali sono stati validati end-to-end sul Mac target con il Capitolo I del demo;
+- TTS, forced alignment e immagini reali sono stati validati end-to-end sul Mac target con il Capitolo I del demo, ma **prima** del passaggio a object storage e coda distribuita: quella validazione va rifatta;
 - il lifecycle locale coordina fasi sequenziali LLM, TTS, aligner, FLUX text-to-image e FLUX reference-edit, scaricando ogni runtime prima del successivo;
 - la cache non è ancora indirizzata da contenuto e configurazione;
 - la validazione automatica della coerenza delle immagini non è presente;

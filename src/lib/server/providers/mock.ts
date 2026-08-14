@@ -1,8 +1,8 @@
 import { z } from 'zod';
-import type { ChapterPlan, Character } from '$lib/core/schemas';
-import { ChapterPlanSchema } from '$lib/core/schemas';
+import type { ArtifactRef, ChapterPlan, Character } from '../../core/schemas';
+import { ChapterPlanSchema } from '../../core/schemas';
 import { saveArtifact, safePart } from '../store';
-import { visualBeatRange } from '$lib/core/plan';
+import { visualBeatRange } from '../../core/plan';
 import type { AlignmentProvider, ImageProvider, ImageRequest, SpeechProvider, SpeechRequest, StructuredRequest, StructuredTextProvider } from './contracts';
 
 function hash(input: string) {
@@ -20,6 +20,29 @@ export class MockStructuredProvider implements StructuredTextProvider {
   model = 'deterministic-demo-v2';
 
   async generate<T>(request: StructuredRequest<T>): Promise<T> {
+    if (request.schemaName === 'story-outline') {
+      const input = jsonMarker<{ prompt: string; chapterCount: number }>(request.prompt, 'STORY_REQUEST_JSON');
+      const subject = input.prompt.replace(/\s+/g, ' ').trim();
+      return request.schema.parse({
+        title: mockStoryTitle(subject),
+        premise: subject,
+        language: 'same language as the request',
+        styleGuide: 'Clear, atmospheric prose with stable names, chronological continuity, and a conclusive final chapter.',
+        chapters: Array.from({ length: input.chapterCount }, (_, order) => ({
+          order,
+          title: `Chapter ${order + 1}`,
+          synopsis: order === input.chapterCount - 1
+            ? `The central conflict from “${subject.slice(0, 120)}” reaches a complete resolution.`
+            : `The consequences of “${subject.slice(0, 120)}” deepen and lead directly into the next chapter.`,
+          continuityNotes: order === 0 ? 'Introduce the protagonist, setting, and central desire.' : 'Preserve every established identity and consequence from the preceding chapter.'
+        }))
+      });
+    }
+    if (request.schemaName === 'story-chapter') {
+      const specification = jsonMarker<{ order: number; title: string; synopsis: string }>(request.prompt, 'CURRENT_CHAPTER_JSON');
+      const storyRequest = request.prompt.split('STORY_REQUEST:\n')[1]?.split('\n\nCOMPLETE_OUTLINE_JSON:')[0]?.trim() ?? 'an original adventure';
+      return request.schema.parse({ title: specification.title, text: mockStoryText(storyRequest, specification) });
+    }
     if (request.schemaName === 'character-patch' || request.schemaName === 'registry-patch') {
       const chapterId = request.prompt.match(/CHAPTER_ID:\s*([^\n]+)/)?.[1] ?? 'chapter-1';
       const text = chapterText(request.prompt);
@@ -39,6 +62,35 @@ export class MockStructuredProvider implements StructuredTextProvider {
     }
     throw new Error(`Mock provider does not implement ${request.schemaName}`);
   }
+}
+
+function jsonMarker<T>(prompt: string, marker: string): T {
+  const serialized = prompt.split(`${marker}:\n`)[1]?.split('\n\n')[0];
+  if (!serialized) throw new Error(`Mock prompt is missing ${marker}`);
+  return JSON.parse(serialized) as T;
+}
+
+function mockStoryTitle(prompt: string) {
+  const compact = prompt.replace(/[^\p{L}\p{N}\s'-]/gu, '').trim();
+  return compact.split(/\s+/).slice(0, 7).join(' ') || 'An Untitled Story';
+}
+
+function mockStoryText(request: string, chapter: { order: number; synopsis: string }) {
+  const premise = request.replace(/\s+/g, ' ').trim().slice(0, 260);
+  const beats = [
+    'The morning began with a small choice whose weight was not yet visible. The familiar world seemed unchanged, but every ordinary detail pointed toward a question that could no longer be ignored.',
+    'The protagonist moved carefully through the setting, noticing what had shifted since the last decision. A remembered promise supplied direction while the consequences of earlier actions remained tangible.',
+    'An unexpected encounter complicated the route forward. Neither side could obtain everything they wanted, so the conversation ended with a precise compromise and a new reason to keep moving.',
+    'Distance made the goal appear simpler than it was. Up close, the obstacle revealed a human cost, and the protagonist paused long enough to understand that courage would require attention rather than speed.',
+    'A concrete clue connected the present moment to the central mystery. Its meaning did not arrive as an explanation; it emerged through action, memory, and the careful comparison of two details already established.',
+    'Pressure narrowed the available choices. The protagonist acted, accepted the immediate consequence, and protected the one relationship that mattered most to the chapter’s emotional movement.',
+    'Silence followed. In that interval, the setting carried the change: light, sound, and physical distance made clear that there could be no return to the chapter’s opening state.',
+    'The final exchange resolved the local conflict without erasing its cost. What had been learned became a decision, and that decision aligned the characters with the next necessary step.',
+    'Before leaving, the protagonist looked back once and recognized the shape of the transformation. The goal remained specific, the continuity remained intact, and the story advanced rather than resetting.',
+    'The chapter closed on a completed action and a clear consequence. Nothing was summarized for the reader; the meaning rested in what the characters had chosen and what the world now required of them.'
+  ];
+  const paragraphs = beats.map((beat, index) => `${beat} This movement develops the requested premise — ${premise} — through scene ${chapter.order + 1}.${index + 1}, while preserving names, motives, and causal continuity. ${chapter.synopsis}`);
+  return paragraphs.join('\n\n');
 }
 
 function chapterText(prompt: string) {
@@ -190,7 +242,7 @@ export class MockSpeechProvider implements SpeechProvider {
 
 export class ProportionalAligner implements AlignmentProvider {
   id = 'proportional';
-  async align(_audioPath: string, text: string, durationMs: number) {
+  async align(_audio: ArtifactRef, text: string, durationMs: number) {
     const words = text.match(/\S+/g) ?? [];
     const weights = words.map((word) => Math.max(1, word.replace(/[^\p{L}\p{N}]/gu, '').length));
     const total = weights.reduce((sum, value) => sum + value, 0) || 1;

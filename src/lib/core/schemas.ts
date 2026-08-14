@@ -1,6 +1,13 @@
 import { z } from 'zod';
 
 export const ArtifactRefSchema = z.object({
+  /**
+   * Object-storage key, stable across storage drivers and deployments. It is the only
+   * durable handle to the bytes: server code reads artifacts through the storage layer
+   * with this key and never by parsing `path`.
+   */
+  key: z.string(),
+  /** Access-controlled application URL used by the browser. Derived from `key`. */
   path: z.string(),
   mimeType: z.string(),
   provider: z.string(),
@@ -30,6 +37,46 @@ export const ChapterSchema = z.object({
   text: z.string(),
   characterCount: z.number().int().nonnegative()
 });
+
+export const StoryCreationRequestSchema = z.object({
+  prompt: z.string().trim().min(20, 'Describe the story in at least 20 characters.').max(4_000, 'Keep the story request under 4,000 characters.'),
+  chapterCount: z.coerce.number().int().min(1).max(12)
+});
+
+export const StoryOutlineChapterSchema = z.object({
+  order: z.number().int().nonnegative(),
+  title: z.string().trim().min(1),
+  synopsis: z.string().trim().min(1),
+  continuityNotes: z.string().trim().min(1)
+});
+
+export const StoryOutlineSchema = z.object({
+  title: z.string().trim().min(1),
+  premise: z.string().trim().min(1),
+  language: z.string().trim().min(1),
+  styleGuide: z.string().trim().min(1),
+  chapters: z.array(StoryOutlineChapterSchema).min(1).max(12)
+});
+
+export const GeneratedStoryChapterSchema = z.object({
+  title: z.string().trim().min(1),
+  /** A complete source chapter, not an outline or performance annotation. */
+  text: z.string().trim().min(1_200)
+});
+
+export const BookOriginSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('imported') }),
+  z.object({
+    kind: z.literal('generated'),
+    prompt: z.string(),
+    requestedChapterCount: z.number().int().min(1).max(12),
+    status: z.enum(['pending', 'generating', 'ready', 'failed']),
+    outline: StoryOutlineSchema.optional(),
+    provider: z.string().optional(),
+    model: z.string().optional(),
+    generatedAt: z.string().optional()
+  })
+]);
 
 export const CharacterSchema = z.object({
   id: z.string(),
@@ -74,6 +121,7 @@ export const BookManifestSchema = z.object({
   id: z.string(),
   title: z.string(),
   sourceName: z.string(),
+  origin: BookOriginSchema.default({ kind: 'imported' }),
   createdAt: z.string(),
   chapters: z.array(ChapterSchema),
   characters: z.array(CharacterSchema).default([]),
@@ -168,28 +216,51 @@ export const GenerationJobStepSchema = z.object({
   detail: z.string().optional()
 });
 
+export const JobKindSchema = z.enum(['story', 'registry', 'chapter', 'chapter-audio', 'character-reference']);
+export const JobStatusSchema = z.enum(['queued', 'active', 'completed', 'failed', 'cancelled']);
+
 export const GenerationJobSchema = z.object({
   schemaVersion: z.literal(1),
   id: z.string(),
-  kind: z.enum(['registry', 'chapter', 'chapter-audio', 'character-reference']),
+  kind: JobKindSchema,
   bookId: z.string(),
-  chapterId: z.string().optional(),
-  characterId: z.string().optional(),
+  chapterId: z.string().nullable().default(null),
+  characterId: z.string().nullable().default(null),
   force: z.boolean().default(false),
+  userId: z.string(),
+  /** The runtime profile of the deployment that accepted the job. */
   mode: z.enum(['mock', 'local', 'cloud', 'hybrid']),
-  status: z.enum(['queued', 'running', 'completed', 'failed']),
-  queuePosition: z.number().int().positive().nullable(),
+  status: JobStatusSchema,
+  /** Position among the jobs still waiting, 1-based. */
+  queuePosition: z.number().int().positive().nullable().default(null),
+  attempts: z.number().int().nonnegative().default(0),
   createdAt: z.string(),
   updatedAt: z.string(),
-  startedAt: z.string().optional(),
-  completedAt: z.string().optional(),
-  error: z.string().optional(),
+  startedAt: z.string().nullable().default(null),
+  completedAt: z.string().nullable().default(null),
+  error: z.string().nullable().default(null),
   steps: z.array(GenerationJobStepSchema)
+});
+
+/** Aggregate queue health, read from Redis so it costs no database compute. */
+export const QueueSnapshotSchema = z.object({
+  name: z.string(),
+  waiting: z.number().int().nonnegative(),
+  active: z.number().int().nonnegative(),
+  delayed: z.number().int().nonnegative(),
+  completed: z.number().int().nonnegative(),
+  failed: z.number().int().nonnegative(),
+  /** False when no worker has been seen, i.e. work would sit forever. */
+  hasWorker: z.boolean()
 });
 
 export type ArtifactRef = z.infer<typeof ArtifactRefSchema>;
 export type BookManifest = z.infer<typeof BookManifestSchema>;
+export type BookOrigin = z.infer<typeof BookOriginSchema>;
 export type Chapter = z.infer<typeof ChapterSchema>;
+export type StoryCreationRequest = z.infer<typeof StoryCreationRequestSchema>;
+export type StoryOutline = z.infer<typeof StoryOutlineSchema>;
+export type GeneratedStoryChapter = z.infer<typeof GeneratedStoryChapterSchema>;
 export type Character = z.infer<typeof CharacterSchema>;
 export type ChapterPlan = z.infer<typeof ChapterPlanSchema>;
 export type RenderedChapter = z.infer<typeof RenderedChapterSchema>;
@@ -197,3 +268,6 @@ export type VoiceProfile = z.infer<typeof VoiceProfileSchema>;
 export type WorldElement = z.infer<typeof WorldElementSchema>;
 export type GenerationJob = z.infer<typeof GenerationJobSchema>;
 export type GenerationJobStep = z.infer<typeof GenerationJobStepSchema>;
+export type JobKind = z.infer<typeof JobKindSchema>;
+export type JobStatus = z.infer<typeof JobStatusSchema>;
+export type QueueSnapshot = z.infer<typeof QueueSnapshotSchema>;

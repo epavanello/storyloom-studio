@@ -1,5 +1,7 @@
 import type { z } from 'zod';
-import type { ArtifactRef, Character, VoiceProfile, WorldElement } from '$lib/core/schemas';
+// Relative, not `$lib`: this tree is imported directly by the standalone worker, which
+// runs outside SvelteKit and cannot resolve its aliases.
+import type { ArtifactRef, Character, VoiceProfile, WorldElement } from '../../core/schemas';
 
 export type VoiceOption = {
   id: string;
@@ -60,5 +62,9 @@ export interface ImageProvider {
 
 export interface AlignmentProvider {
   id: string;
-  align(audioPath: string, text: string, durationMs: number): Promise<{ words: { text: string; startMs: number; endMs: number }[]; quality: 'exact' | 'approximate' }>;
+  /**
+   * Takes the artifact reference rather than a URL: the bytes are fetched through the
+   * storage layer by key, so alignment works the same on a local disk and on R2.
+   */
+  align(audio: ArtifactRef, text: string, durationMs: number): Promise<{ words: { text: string; startMs: number; endMs: number }[]; quality: 'exact' | 'approximate' }>;
 }

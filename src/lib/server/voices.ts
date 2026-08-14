@@ -1,4 +1,4 @@
-import type { BookManifest, Character, VoiceProfile } from '$lib/core/schemas';
+import type { BookManifest, Character, VoiceProfile } from '../core/schemas';
 import type { VoiceOption } from './providers/contracts';
 
 export const qwenVoiceOptions: readonly VoiceOption[] = [

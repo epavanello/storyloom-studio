@@ -1,148 +1,192 @@
 # Storyloom Studio
 
-Local-first proof of concept for turning EPUB, PDF and plain-text books into synchronized audiovisual performances. Storyloom analyzes a book once, locks characters into a central registry, and renders chapters on demand with expressive voices and reference-conditioned scene images.
+Storyloom turns imported or AI-authored books into synchronized audiovisual chapter performances: it analyzes a book once, locks characters into a central registry, and renders chapters on demand with expressive voices and reference-conditioned scene images. EPUB, PDF and plain text can be imported; alternatively, the queued story writer can turn a prompt into a complete multi-chapter source manuscript.
 
-For the complete product vision, boundaries, quality goals, current limitations and recommended roadmap, read [PROJECT_CONTEXT.md](./PROJECT_CONTEXT.md). Future implementation sessions should treat that document as product intent and verify every claimed capability against the current code.
-
-## Verified locally
-
-- EPUB, PDF and TXT ingestion with deterministic chapter splitting
-- schema-validated Character, Voice and selective World registries
-- deterministic demo character extraction without external models
-- Reference-sheet generation before scene generation
-- Full-chapter creative planning into typed utterances, performance directions, visual beats and sound cues
-- deterministic validation that the performance plan preserves the original chapter text and uses valid references
-- explicit narrator and per-character voice profiles with gender, provider, model, stable voice ID and seed
-- Sequential multi-voice playback with synchronized scene changes and highlighted script
-- Artifact persistence and resumable chapter cache
-- persisted background jobs with per-step progress that survives browser reloads
-- deterministic local demo providers that require no credentials or model downloads
-- responsive chapter player for desktop, medium and mobile viewports
-- Shared Zod schemas for persisted data, model output and TypeScript types
-
-The default demo uses procedural SVGs, silent timed audio and approximate proportional word timing. It validates the application flow, not the creative quality of real inference.
-
-## Real local vertical validated
-
-The local stack has been exercised end to end on an Apple M4 Max with 36 GB unified memory:
-
-- Qwen3.6 35B A3B 4-bit in LM Studio for structured character extraction and chapter planning
-- Qwen3-TTS 1.7B CustomVoice 8-bit through a local MLX OpenAI-compatible endpoint
-- Qwen3 ForcedAligner 0.6B for exact word timestamps
-- FLUX.2 Klein 4B MLX 4-bit for 1024 px character sheets and scenes
-- FLUX.2 multi-reference editing for scenes that contain locked characters
-
-Character and world references remain square in both profiles. Narrative scenes are generated natively at 16:9: the local MLX runtime uses 1024×576 and OpenRouter requests the same aspect ratio, so local and cloud players receive the same scene shape without cropping.
-
-The built-in `The Observatory` validation render contains 14 real WAV passages, exact alignment, five generated scenes and a 61-second synchronized timeline. No cloud provider or mock artifact participates in that render.
-
-## Quick start
-
-```bash
-cp .env.storyloom-local.example .env.storyloom-local
-pnpm install
-pnpm dev:local
-```
-
-Set `STORYLOOM_MODE=mock` when model-free development is desired. On the configured target Mac, `.env` is currently set to `local`; open `http://localhost:4173` and select `The Observatory` to inspect the verified render.
-
-## Local mode
-
-Use `pnpm dev:local` and leave the LM Studio API server running on port `1234`. Storyloom owns the heavy-model lifecycle during a pipeline; do not start the media servers separately.
-
-The deterministic coordinator executes one heavy phase at a time:
-
-```text
-LM Studio text → unload
-Qwen3-TTS → stop
-Qwen3 ForcedAligner → stop
-FLUX text-to-image → stop
-FLUX reference edit → stop
-```
-
-Text work is batched before LM Studio is unloaded. Audio for all utterances is generated before TTS is released, alignment is then performed in its own phase, and plain/reference-conditioned visuals are grouped separately. Generation requests from every browser tab become persisted jobs. Local jobs share a global FIFO queue, and the runtime coordinator remains a second safety boundary around individual heavy phases. The UI reconnects automatically after a browser reload and shows the current step plus completed and remaining work.
-
-The media runtime installations live outside the repository under `STORYLOOM_RUNTIME_HOME` (default `~/.local/share/storyloom-studio`). The configured target Mac already contains:
-
-- `qwen3-tts-api/.venv-mlx`
-- `chatterbox-v3/.venv`
-- `qwen3-aligner/.venv`
-- `mlx-openai-server/.venv`
-
-Set `LOCAL_TTS_ENGINE=qwen` for the original Qwen CustomVoice path or `LOCAL_TTS_ENGINE=chatterbox-v3` for the alternative local speech engine. The hybrid developer profile currently selects Chatterbox Multilingual V3. It runs on Apple MPS, pins Italian explicitly, and automatically assigns gender-compatible reusable reference identities from a local voice catalog. Generate the fictional local casting catalog with `~/.local/share/storyloom-studio/qwen3-tts-api/.venv-mlx/bin/python runtime/voice-casting/generate_candidates.py --output ~/.local/share/storyloom-studio/chatterbox-v3/voices/synthetic`; it uses the BF16 Qwen3-TTS VoiceDesign model to create original Italian references and records their prompt, seed, source model, and reference text. `runtime/voice-casting/render_chatterbox_auditions.py` can add a second role-specific Chatterbox rendition while that local server is running. The technical UI exposes both files for A/B auditioning. Chatterbox's `exaggeration`, `cfg_weight`, and temperature remain deliberately restrained for neutral audiobook narration and increase only for genuinely expressive directions.
-
-Storyloom adds `runtime/mlx-openai-server` to that process's `PYTHONPATH`. The contained compatibility overlay extends mlx-openai-server 1.8.1's square-only request enum with `1024x576` and forwards that size through its image-edit path. The underlying MFLUX model accepts independent width and height values; the installed virtual environment is not modified.
-
-Model weights remain in the local Hugging Face and LM Studio caches and are never committed to the project.
-
-## Cloud mode (one OpenRouter key)
-
-```bash
-cp .env.storyloom-cloud.example .env.storyloom-cloud
-# set OPENROUTER_API_KEY in .env.storyloom-cloud
-pnpm dev:cloud
-```
-
-The cloud profile routes structured text, TTS and reference-capable image generation through OpenRouter. Structured planning uses DeepSeek V4 Flash 0731; speech defaults to Gemini 3.1 Flash TTS Preview because OpenRouter exposes 30 stable voices for it, allowing deterministic gender-compatible casting and a distinct narrator; images use Gemini 3.1 Flash Image. It uses `data/cloud` by default, keeping cloud artifacts and job state separate from the local profile. Cloud jobs are not serialized by Storyloom, so independent tabs may run concurrently. OpenRouter does not currently expose a dedicated forced-alignment endpoint: cloud renders therefore use duration-derived proportional word timing and record it as `approximate`, never as exact. No local inference endpoint is called in cloud mode.
-
-Registry analysis may also retain at most eight central recurring locations or objects. Every selectively retained continuity anchor receives a reusable illustrated reference; incidental props and generic scenery are excluded before that stage. Character references are generated as one subject on a neutral background with no labels, collage panels or duplicate poses. Character, world and scene images share one versioned storybook-illustration style in both local and cloud modes. For a normal chapter the planner selects a bounded set of visual beats distributed from the opening to the ending, rather than collapsing the whole chapter into one scene.
-
-The book screen exposes explicit maintenance actions for qualitative iteration: regenerate one character reference, force a complete chapter regeneration, refresh outdated illustrated registry references, or remove a whole book. Forced chapter runs create new media files instead of overwriting the previous audio and images. Removing a book is refused while generation is active and moves its complete directory under the profile data root's `.trash` folder, so the operation is recoverable from disk.
-
-`Regenerate all audio` reuses the validated chapter plan and existing scene images, creates a new immutable WAV for every passage, runs alignment again, and reanchors the existing scenes to the new audio timeline. Local Qwen requests explicitly send `language: Italian` and use the server's `instruct` field for character identity, emotion, intensity and pace; `instructions` is not part of that local API and must not be used. The generated artifact records the effective language and instruction for diagnosis and cache provenance.
-
-Generation and destructive maintenance controls are available only when `STORYLOOM_TECHNICAL_UI=true`. The repository examples default this flag to `false`; the ignored developer profiles in this workspace enable it. In technical mode, the info marker beside each performed passage exposes a tooltip with its provider, model, voice, effective language and exact persisted TTS instruction. Artifacts created before this provenance field was introduced ask to be regenerated instead of pretending to know the historical prompt.
-
-Before validation, a deterministic dialogue pass separates quoted direct speech from surrounding attribution. For example, `«Come stai, Astri?», le chiese.` becomes an actor unit containing the quoted sentence and an immediately following narrator unit containing `, le chiese.`. The transformation preserves every source character and offset, remaps cue anchors and is also applied when using audio-only regeneration on an older chapter plan.
-
-The SvelteKit API routes are intentional. Experimental `.remote.ts` functions would provide typed client/server calls, but not durable background execution, cross-tab queueing, or process-independent progress. Keeping jobs as explicit HTTP resources also makes polling and future external clients straightforward while remote functions remain experimental.
-
-## Hybrid mode
-
-The ready-made hybrid profile sends only structured registry/planning work to DeepSeek V4 Flash 0731 through OpenRouter. Speech, forced alignment, character/world references and scene images remain local and are loaded and released sequentially by the same memory coordinator used in local mode:
-
-```bash
-cp .env.storyloom-hybrid.example .env.storyloom-hybrid # already configured in this workspace
-pnpm dev:hybrid
-```
-
-`dev:hybrid` reads only `OPENROUTER_API_KEY` from the existing ignored `.env.storyloom-cloud`; it does not duplicate or print the secret. Hybrid books and artifacts live under `data/hybrid`, separately from both local and cloud data. Jobs share the persisted local FIFO queue, the remote LLM never causes LM Studio to load, and the three media policies are `local-required`, so a local media failure is surfaced rather than silently sent to a cloud model. `pnpm build:hybrid` builds the same profile.
-
-Complete chapter plans use a five-minute OpenRouter request timeout and at most two transport retries. Short registry requests retain the 90-second default. Provider retries and Storyloom's separate source-coverage correction attempts are shown as distinct counters in job progress.
-
-The underlying hybrid router also supports explicit per-capability policies:
-
-- `local-required`: never sends this workload to cloud
-- `local-preferred`: local first, cloud only after a local failure
-- `cloud-preferred`: cloud first, local fallback
-- `cloud-only`: no local attempt
-
-Artifacts always record the provider and model that produced them.
+It runs as a deployable service where **the web tier and the machine doing inference do not have to be the same box**. For the product vision, boundaries and quality goals, read [PROJECT_CONTEXT.md](./PROJECT_CONTEXT.md); treat that document as intent and verify every claimed capability against the code.
 
 ## Architecture
 
 ```text
-SvelteKit UI
-  -> deterministic orchestrator
-    -> capability router
-      -> Vercel AI SDK text adapter (LM Studio / OpenRouter)
-      -> speech adapter (local / OpenRouter)
-      -> image adapter (local / OpenRouter)
-      -> forced-alignment adapter
-    -> shared local runtime coordinator (load, batch, release)
-    -> validated immutable artifacts
+browser ──▶ SvelteKit web tier ──▶ SQLite   (books, chapters, renders, job records)
+                    │                          local file, or Turso when distributed
+                    │             ──▶ Redis    (job queue + live progress)
+                    │             ──▶ storage  (audio, images, reference sheets)
+                    │                          local filesystem, or S3/R2
+                    ▼
+             one BullMQ queue
+                    ▼
+       worker ──▶ deterministic orchestrator
+                    └─▶ capability router
+                          ├─ text (LM Studio / OpenRouter)
+                          ├─ speech (local / OpenRouter)
+                          ├─ forced alignment
+                          └─ images (local / OpenRouter)
 ```
 
-The orchestrator itself makes no creative decisions. The chapter planner reads the complete chapter and emits a typed performance plan. The orchestrator validates that plan, invokes the selected providers, aligns audio, resolves scene cues to real timeline positions, caches the result and exposes it to the player.
+The orchestrator makes no creative decisions. The chapter planner reads the complete chapter and emits a typed performance plan; the orchestrator validates it, invokes the selected providers, aligns audio, resolves scene cues to real timeline positions, stores the result and exposes it to the player.
+
+### Where a job runs
+
+**A deployment is either cloud or local, never both.** `STORYLOOM_MODE` decides it, and every job on that deployment runs that way — there is no per-account choice and no mixed routing. What is parametric is *which process* drains the queue:
+
+- `STORYLOOM_WORKER_MODE=inline` — the web process runs the worker. One box does everything.
+- `STORYLOOM_WORKER_MODE=external` — the web process only accepts and reports jobs; a separate `pnpm worker` drains the queue, on this machine or another one.
+- `STORYLOOM_WORKER_MODE=off` — this process never executes jobs.
+
+Switching from local to cloud later is a configuration change, not a code change: point `STORYLOOM_MODE` and the capability policies at the cloud and let the web process run the worker inline.
+
+A worker holds direct database and Redis credentials, so it can read every account's data. Run it only on a machine you operate.
+
+### Swappable infrastructure
+
+Both stateful pieces sit behind one interface, so the same code serves a laptop and a hosted deployment:
+
+| | one machine | distributed |
+| --- | --- | --- |
+| Database | `DATABASE_URL=file:./data/storyloom.db` | `DATABASE_URL=libsql://…turso.io` + `DATABASE_AUTH_TOKEN` |
+| Artifacts | `STORAGE_DRIVER=fs` | `STORAGE_DRIVER=s3` + bucket credentials |
+
+| Queue | in-process, no `REDIS_URL` | `REDIS_URL` pointing at Redis |
+
+A `file:` database and the in-process queue only work when everything runs in one place: two machines cannot share a SQLite file, and nothing outside the process can see an in-memory queue. Selecting either while `STORYLOOM_WORKER_MODE` is not `inline` is refused at startup rather than leaving jobs silently unexecuted.
+
+The in-process queue is not a toy: work already accepted is durable, because the `jobs` table is the record of what is owed and anything still queued is re-enqueued at boot. What it does not survive is a render already in flight, which is reported as interrupted so the user can restart it.
+
+### Cost shape
+
+Nothing polls the database. Live per-step job progress is written to Redis, the browser polls Redis-backed endpoints, and the database only sees state transitions — a job accepted, started, finished — plus the durable result of a render. Sessions are cached in a signed cookie for a minute. That keeps a hosted database's request count proportional to real work rather than to open browser tabs.
+
+## Quick start
+
+```bash
+cp .env.example .env
+# fill in STORYLOOM_ENCRYPTION_KEY and BETTER_AUTH_SECRET: openssl rand -base64 32
+pnpm install
+pnpm db:migrate
+pnpm dev                                      # mock inference by default
+```
+
+Open `http://localhost:4173`, create an account, and either generate a story from a prompt, import a book, or open the built-in demo story. With `STORYLOOM_MODE=mock` no credentials or model downloads are needed.
+
+## Story sources and reading
+
+The library accepts two source paths:
+
+- import EPUB, PDF or TXT while preserving the extracted chapter text;
+- request an original story and choose 1–12 chapters. A queued text-provider job first creates the complete narrative outline, then writes and stores every full chapter in order.
+
+Generated chapters become immutable source text as soon as each chapter completes. If the writer stops, retrying resumes from the first missing chapter rather than rewriting successful chapters. The saved prompt, requested chapter count, outline, provider route and model remain attached to the book as provenance.
+
+Every available chapter can be opened in **Read** mode before registries, voices, audio or images exist. Audiovisual augmentation remains a separate on-demand action, and a prepared chapter can switch between its source text and its performance.
+
+## Deployment topologies
+
+**1. Everything on one machine** — `.env` + `.env.storyloom-hybrid`
+
+The app, a SQLite file, artifacts on disk, an in-process durable queue, and hybrid inference: the language model on OpenRouter, speech, alignment and images on this machine. No database or queue server is required.
+
+```bash
+cp .env.example .env
+cp .env.storyloom-hybrid.example .env.storyloom-hybrid
+pnpm db:migrate && pnpm dev:hybrid
+```
+
+Use `.env.storyloom-local.example` as the overlay instead when the language model must run in LM Studio too, so nothing at all leaves the machine.
+
+**2. Full SaaS** — `.env` + `.env.storyloom-cloud`
+
+One small always-on box, Turso for the database, R2 for artifacts, all inference through OpenRouter with each account's own key. Put Turso, Redis, R2 and auth settings in `.env`; copy `.env.storyloom-cloud.example` to `.env.storyloom-cloud` for models and policies. `STORYLOOM_WORKER_MODE=inline`, so the web process drains its own queue and no second machine is involved.
+
+**3. Deployed app, your own hardware doing the inference** — `.env.worker.example`
+
+The web deployment points at Turso and R2 with `STORYLOOM_WORKER_MODE=off`, so it only accepts and reports jobs. Your machine drains the queue against the same database and bucket:
+
+```bash
+cp .env.worker.example .env
+cp .env.storyloom-hybrid.example .env.storyloom-hybrid
+pnpm worker:hybrid
+```
+
+Media generated here is written to the shared bucket, so the deployed app serves it immediately. When your machine is off, jobs queue up and both the book page and `/jobs` report that no worker is connected — nothing hangs silently. This is also the migration path: switching to topology 2 later means changing the policies and turning the inline worker back on, not changing code.
+
+## Configuration
+
+Configuration is layered deliberately:
+
+1. `.env` owns stable deployment information: database, Redis, storage, secrets, accounts and worker placement.
+2. `.env.storyloom-local`, `.env.storyloom-hybrid` or `.env.storyloom-cloud` owns only inference mode, capability policies, provider models and model concurrency.
+3. Variables exported by the host override both files.
+
+Vite applies this inheritance for `dev:*` and `build:*`; the matching `worker:*` commands do the same. `db:migrate` reads only `.env`, because migrations need infrastructure credentials but no inference model. The variables that decide the topology:
+
+| Variable | Meaning |
+| --- | --- |
+| `STORYLOOM_MODE` | `mock`, `local`, `cloud`, `hybrid` — how this deployment executes every job |
+| `STORYLOOM_WORKER_MODE` | `inline` (worker inside the web process), `external`, `off` |
+| `DATABASE_URL` | `file:…` for one machine, `libsql://…turso.io` when distributed |
+| `DATABASE_AUTH_TOKEN` | Required for a `libsql://` URL |
+| `REDIS_URL` | Optional on one machine; required as soon as the worker is a separate process |
+| `STORYLOOM_QUEUE_PREFIX` | Namespaces Redis keys; must match across a deployment's web tier and workers |
+| `STORAGE_DRIVER` | `fs` or `s3`; defaults to `s3` when `S3_BUCKET` is set |
+| `STORYLOOM_ENCRYPTION_KEY` | Encrypts stored provider keys. Changing it makes them unreadable |
+| `BETTER_AUTH_SECRET` | Signs sessions |
+
+## Accounts and credentials
+
+Sign-in is email/password, with GitHub and Google enabled automatically when their client ID and secret are configured. Every book, chapter, render, artifact and job belongs to exactly one account and every read is scoped by that owner, including artifact downloads — media is served through an authorizing route that hands out a short-lived signed URL, never from a public bucket.
+
+Provider keys are bring-your-own: each account stores its own OpenRouter key, sealed with AES-256-GCM and decrypted only while one of that account's jobs runs. `OPENROUTER_API_KEY` in the environment is an operator fallback for a single-tenant deployment and is left empty on a public one. A deployment in `local` or `mock` mode needs no key at all.
+
+## Modes
+
+- **mock** — deterministic demo providers, no credentials. Procedural SVGs, silent timed audio and proportional word timing. It exercises the flow, not creative quality.
+- **local** — every mandatory step runs on the machine's own runtimes; nothing is sent to a cloud provider.
+- **cloud** — structured text, TTS and reference-capable image generation through OpenRouter. OpenRouter exposes no forced-alignment endpoint, so cloud renders use duration-derived proportional timing and record it as `approximate`, never as exact.
+- **hybrid** — a policy per capability: `local-required`, `local-preferred`, `cloud-preferred`, `cloud-only`. Artifacts always record the provider and model that produced them.
+
+In `local` mode Storyloom owns the heavy-model lifecycle and executes one phase at a time — LM Studio text → unload, Qwen3-TTS → stop, forced aligner → stop, FLUX text-to-image → stop, FLUX reference edit → stop — so a worker on that machine defaults to `STORYLOOM_WORKER_CONCURRENCY=1`. Media runtime installations live outside the repository under `STORYLOOM_RUNTIME_HOME` (default `~/.local/share/storyloom-studio`).
 
 ## Commands
 
 ```bash
+pnpm dev            # web app, base .env (mock unless STORYLOOM_MODE is exported)
+pnpm dev:local      # .env + .env.storyloom-local
+pnpm dev:hybrid     # .env + .env.storyloom-hybrid
+pnpm dev:cloud      # .env + .env.storyloom-cloud
+pnpm worker         # standalone queue consumer using base .env
+pnpm worker:local   # base + local profile
+pnpm worker:hybrid  # base + hybrid profile
+pnpm worker:cloud   # base + cloud profile
+pnpm start:local    # run a built server with base + local profile
+pnpm start:hybrid   # run a built server with base + hybrid profile
+pnpm start:cloud    # run a built server with base + cloud profile
+pnpm db:generate    # write a migration after changing the Drizzle schema
+pnpm db:migrate     # apply migrations using database settings from .env
 pnpm check
 pnpm test
-pnpm build:local
-pnpm build:cloud
-pnpm start
+pnpm build && pnpm start
 ```
 
-Generated books and media are written below `data/` and are ignored by Git.
+## Verified
+
+Exercised end to end in `mock` mode against a real SQLite database and Redis, through the HTTP API with real sessions:
+
+- account creation, sign-in and rejection of anonymous requests;
+- book import, chapter render, and artifacts written and read back;
+- a job produced by the web tier and executed by a **separate worker process**, with the web tier observing the completed render;
+- a queued job correctly waiting, and being reported as waiting, while no worker is connected;
+- cancellation of a queued job, refusal to delete a book with unfinished work, and deletion removing rows and objects together;
+- one account being unable to read another account's book, artifacts or jobs, or to queue work against them (404 in every case).
+
+`src/lib/server/pipeline.integration.test.ts` covers that pipeline and runs automatically when `DATABASE_URL` and `REDIS_URL` are set; the default `pnpm test` skips it and needs no services.
+
+Every one of those runs used `STORAGE_DRIVER=fs` and a local SQLite file. **The S3/R2 driver and a hosted Turso database have never been exercised against a real endpoint** — they are written to the documented request shapes and type-check, which is not evidence that they work. Verify both before relying on topology 2 or 3.
+
+The earlier local vertical — Qwen3.6 35B A3B for structured planning, Qwen3-TTS 1.7B, Qwen3 ForcedAligner for exact word timestamps, FLUX.2 Klein 4B for character sheets and scenes — was validated on an Apple M4 Max with 36 GB unified memory **before** this restructuring. Those providers are unchanged in substance but have not been re-run end to end since artifacts moved behind the storage layer.
+
+## Not built yet
+
+- **Per-account execution.** Every job on a deployment runs the deployment's way. There is no mixed cloud/local deployment and no per-user routing, by design.
+- **Quotas and rate limits.** Nothing bounds how much work an account can queue.
+- **Email verification and password reset.** better-auth supports both; no mailer is wired.
+- **Artifact cache fingerprints.** A render is still addressed by chapter, not by a fingerprint of input, provider, model and settings, so a provider change does not invalidate a cached chapter.

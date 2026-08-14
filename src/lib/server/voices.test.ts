@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BookManifestSchema } from '$lib/core/schemas';
+import { BookManifestSchema } from '../core/schemas';
 import { assignVoiceProfiles, geminiVoiceOptions } from './voices';
 
 describe('voice registry assignment', () => {

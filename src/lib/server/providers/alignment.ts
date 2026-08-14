@@ -1,6 +1,6 @@
-import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
-import { resolveArtifact } from '../store';
+import type { ArtifactRef } from '../../core/schemas';
+import { readArtifact } from '../store';
 import type { AlignmentProvider } from './contracts';
 
 const AlignmentResponseSchema = z.object({
@@ -16,14 +16,10 @@ export class QwenForcedAlignerProvider implements AlignmentProvider {
 
   constructor(private readonly baseUrl: string) {}
 
-  async align(audioPath: string, text: string, _durationMs: number) {
-    const match = audioPath.match(/^\/api\/artifacts\/([^/]+)\/(.+)$/);
-    if (!match) throw new Error(`Cannot align non-local artifact: ${audioPath}`);
-    const bookId = decodeURIComponent(match[1]);
-    const relativePath = match[2].split('/').map(decodeURIComponent).join('/');
-    const bytes = await readFile(resolveArtifact(bookId, relativePath));
+  async align(audio: ArtifactRef, text: string, _durationMs: number) {
+    const bytes = await readArtifact(audio);
     const form = new FormData();
-    form.set('audio', new Blob([bytes], { type: 'audio/wav' }), 'utterance.wav');
+    form.set('audio', new Blob([bytes], { type: audio.mimeType }), 'utterance.wav');
     form.set('text', text);
     form.set('language', 'Italian');
     const response = await fetch(`${this.baseUrl.replace(/\/$/, '')}/align`, { method: 'POST', body: form });

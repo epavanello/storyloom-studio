@@ -1,0 +1,25 @@
+# Redis for the job queue. The database does not appear here: a single-machine
+# deployment uses a local SQLite file, and a distributed one uses Turso.
+#
+#   docker compose -f docker-compose.dev.yml up -d
+#   pnpm db:migrate
+#
+# On a Mac, `brew install redis && brew services start redis` works just as well.
+services:
+  redis:
+    image: redis:7-alpine
+    # Job state is durable in the database, but persisting the queue means a restart
+    # does not silently drop work that was already accepted.
+    command: ['redis-server', '--appendonly', 'yes']
+    ports:
+      - '6379:6379'
+    volumes:
+      - storyloom-redis:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  storyloom-redis:

@@ -1,6 +1,5 @@
-import { readFile } from 'node:fs/promises';
-import { resolveArtifact, saveArtifact, safePart } from '../store';
-import type { ArtifactRef } from '$lib/core/schemas';
+import { readArtifact, saveArtifact, safePart } from '../store';
+import type { ArtifactRef } from '../../core/schemas';
 import { chatterboxVoiceOptions, geminiVoiceOptions, qwenVoiceOptions } from '../voices';
 import type { ImageProvider, ImageRequest, SpeechProvider, SpeechRequest, VoiceOption } from './contracts';
 
@@ -19,6 +18,26 @@ function qwenInstruction(request: SpeechRequest) {
   const role = request.voice.characterId === 'narrator' ? 'narratore letterario sobrio' : 'personaggio credibile';
   const pace = request.pace === 'slow' ? 'lento' : request.pace === 'fast' ? 'sostenuto' : 'naturale';
   return `Leggi esclusivamente in italiano naturale come ${role}${emotion}, con ritmo ${pace}. Riproduci esattamente il testo senza aggiunte o commenti.`;
+}
+
+/**
+ * Loads the approved reference sheets for the identities actually present in a scene.
+ * A reference that cannot be read is dropped rather than silently substituted, so the
+ * caller still knows which identities the result was conditioned on.
+ */
+async function loadReferences(request: ImageRequest, limit = Number.POSITIVE_INFINITY) {
+  const refs = [
+    ...request.characters.flatMap((character) => character.referenceImages.slice(0, 2)),
+    ...request.worldElements.flatMap((element) => element.referenceImages.slice(0, 1))
+  ].slice(0, limit);
+  const loaded = await Promise.all(refs.map(async (reference) => {
+    try {
+      return { bytes: await readArtifact(reference), mimeType: reference.mimeType };
+    } catch {
+      return null;
+    }
+  }));
+  return loaded.filter((item): item is NonNullable<typeof item> => item !== null);
 }
 
 export class OpenAiCompatibleSpeechProvider implements SpeechProvider {
@@ -140,22 +159,7 @@ export class OpenAiCompatibleImageProvider implements ImageProvider {
   constructor(readonly id: string, readonly model: string, private readonly baseUrl: string, private readonly apiKey: string) {}
 
   async generate(request: ImageRequest): Promise<ArtifactRef> {
-    const references = await Promise.all([
-      ...request.characters.flatMap((character) => character.referenceImages.slice(0, 2)),
-      ...request.worldElements.flatMap((element) => element.referenceImages.slice(0, 1))
-    ].slice(0, 4).map(async (reference) => {
-      const match = reference.path.match(/^\/api\/artifacts\/([^/]+)\/(.+)$/);
-      if (!match) return null;
-      try {
-        const relativePath = match[2].split('/').map(decodeURIComponent).join('/');
-        return {
-          bytes: await readFile(resolveArtifact(decodeURIComponent(match[1]), relativePath)),
-          mimeType: reference.mimeType
-        };
-      } catch {
-        return null;
-      }
-    })).then((items) => items.filter((item): item is NonNullable<typeof item> => item !== null));
+    const references = await loadReferences(request, 4);
     const root = this.baseUrl.replace(/\/$/, '');
     const size = request.kind === 'scene' ? '1024x576' : '1024x1024';
     const response = references.length
@@ -195,20 +199,10 @@ export class OpenRouterImageProvider implements ImageProvider {
   constructor(readonly model: string, private readonly apiKey: string) {}
 
   async generate(request: ImageRequest): Promise<ArtifactRef> {
-    const inputReferences = await Promise.all([
-      ...request.characters.flatMap((character) => character.referenceImages.slice(0, 2)),
-      ...request.worldElements.flatMap((element) => element.referenceImages.slice(0, 1))
-    ].map(async (reference) => {
-      const match = reference.path.match(/^\/api\/artifacts\/([^/]+)\/(.+)$/);
-      if (!match) return null;
-      try {
-        const relativePath = match[2].split('/').map(decodeURIComponent).join('/');
-        const bytes = await readFile(resolveArtifact(decodeURIComponent(match[1]), relativePath));
-        return { type: 'image_url', image_url: { url: `data:${reference.mimeType};base64,${bytes.toString('base64')}` } };
-      } catch {
-        return null;
-      }
-    })).then((items) => items.filter((item): item is NonNullable<typeof item> => item !== null));
+    const inputReferences = (await loadReferences(request)).map((reference) => ({
+      type: 'image_url',
+      image_url: { url: `data:${reference.mimeType};base64,${Buffer.from(reference.bytes).toString('base64')}` }
+    }));
     let lastError: unknown;
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       try {
