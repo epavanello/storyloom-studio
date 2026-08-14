@@ -1,4 +1,4 @@
-import { error, redirect } from '@sveltejs/kit';
+import { error, isRedirect, redirect } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { requireUser } from '$lib/server/session';
 import { assertSafeKey, bookIdFromKey, getStorage } from '$lib/server/storage/index';
@@ -51,6 +51,9 @@ export const GET: RequestHandler = async ({ params, locals }) => {
       }
     });
   } catch (cause) {
+    // SvelteKit implements redirect() by throwing a Redirect object. Do not turn a
+    // valid S3/R2 signed-URL redirect into the same 404 used for missing objects.
+    if (isRedirect(cause)) throw cause;
     if (cause instanceof Response) throw cause;
     error(404, 'Artifact not found');
   }

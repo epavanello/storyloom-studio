@@ -67,6 +67,12 @@ function mergeWorldElements(existing: WorldElement[], incoming: WorldElement[]) 
   return merged;
 }
 
+/** Keeps a rejection reason readable on a single progress line. */
+function shorten(message: string, limit = 110) {
+  const flat = message.replace(/\s+/gu, ' ').trim();
+  return flat.length > limit ? `${flat.slice(0, limit)}…` : flat;
+}
+
 export async function ingestBook(userId: string, fileName: string, bytes: Uint8Array) {
   const parsed = await parseBook(fileName, bytes);
   if (!parsed.chapters.length) throw new Error('No readable chapters were found');
@@ -228,13 +234,16 @@ export async function prepareChapter(
     manifest.voices = assignVoiceProfiles(manifest, service.speech);
     await saveBookRegistry(bookId, { voices: manifest.voices });
   }
-  await onProgress({ stepId: 'plan', status: 'running', completed: 0, total: 1, detail: 'Directing the complete chapter' });
+  await onProgress({ stepId: 'plan', status: 'running', completed: 0, total: 1, detail: 'Splitting the chapter into spoken passages and visual beats' });
   let plan: z.infer<typeof ChapterPlanSchema> | undefined;
   let rejectedPlan: z.infer<typeof ChapterPlanSchema> | undefined;
   let planError = '';
   await withLocalRuntime('text', async () => {
     for (let planAttempt = 1; planAttempt <= 3; planAttempt += 1) {
-      await onProgress({ stepId: 'plan', status: 'running', detail: `Validating complete source coverage · plan attempt ${planAttempt} of 3` });
+      // The rewrite counter only means something once a plan has actually been rejected,
+      // so the first pass says what it is doing instead of counting attempts.
+      const rewriteLabel = planAttempt === 1 ? '' : `Plan rewrite ${planAttempt - 1} of 2`;
+      if (rewriteLabel) await onProgress({ stepId: 'plan', status: 'running', detail: `${rewriteLabel} · previous plan rejected: ${shorten(planError)}` });
       const correction = rejectedPlan
         ? `\n\nPREVIOUS_PLAN_REJECTED:\n${JSON.stringify(rejectedPlan)}\n\nVALIDATION_ERROR:\n${planError}\nReturn a complete corrected plan. Do not patch only one utterance.`
         : '';
@@ -245,7 +254,7 @@ export async function prepareChapter(
         providerAttempts: 2,
         system: `Create an audiobook performance plan from the complete chapter. Preserve every original word exactly once across ordered utterances: no omissions, additions, summaries, overlaps, or reordered passages. Attribute dialogue only when certain. Keep adjacent narration by the same speaker in coherent passages, normally 40-220 characters; avoid tiny fragments under 20 characters unless the source contains a genuinely standalone brief line of dialogue. Choose ${visualRange.minimum}-${visualRange.maximum} visually distinct, meaningful visual beats distributed across the whole chapter, including at least one in its opening third and one in its final third. Use stable character and world-element IDs from the registries. Attach a world element only when it is actually visible and continuity-relevant in that scene. Visual prompts describe content and composition, not a competing medium or art style. Do not request realism or photography. Do not include sound effects unless narratively useful.`,
         prompt: `CHAPTER_ID: ${chapter.id}\nCHAPTER_TITLE: ${chapter.title}\nCHAPTER_TEXT:\n${chapter.text}\n\nCHARACTER_REGISTRY:\n${JSON.stringify(manifest.characters)}\n\nWORLD_REGISTRY:\n${JSON.stringify(manifest.worldElements)}${correction}`,
-        onStatus: (detail) => onProgress({ stepId: 'plan', status: 'running', detail: `${detail} · plan candidate ${planAttempt} of 3` })
+        onStatus: (detail) => onProgress({ stepId: 'plan', status: 'running', detail: rewriteLabel ? `${rewriteLabel} · ${detail}` : detail })
       });
       try {
         plan = validateVisualBeatCoverage(validateChapterPlan(

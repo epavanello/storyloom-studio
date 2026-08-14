@@ -88,6 +88,8 @@ export async function generateStory(context: RunContext, onProgress: ProgressRep
       if (!outline) {
         let lastError: unknown;
         for (let attempt = 1; attempt <= 2; attempt += 1) {
+          const retryLabel = attempt === 1 ? '' : 'Redesigning the arc after a rejected outline';
+          if (retryLabel) await onProgress({ stepId: 'story-outline', status: 'running', detail: retryLabel });
           try {
             const candidate = await service.text.generate({
               schema: StoryOutlineSchema,
@@ -96,7 +98,7 @@ export async function generateStory(context: RunContext, onProgress: ProgressRep
               providerAttempts: 2,
               system: `Design the complete structure for an original work of fiction. The user's request is the creative source of truth. Return exactly the requested number of ordered chapters, numbered from zero. Keep one coherent narrative arc, stable character identities, explicit causal continuity, and a real ending. Write the story in the same language as the user's request unless the request explicitly asks for another language. This is an outline only; do not write chapter prose yet.`,
               prompt: `STORY_REQUEST_JSON:\n${JSON.stringify({ prompt: origin.prompt, chapterCount: origin.requestedChapterCount })}`,
-              onStatus: (detail) => onProgress({ stepId: 'story-outline', status: 'running', detail: `${detail} · outline attempt ${attempt} of 2` })
+              onStatus: (detail) => onProgress({ stepId: 'story-outline', status: 'running', detail: retryLabel ? `${retryLabel} · ${detail}` : detail })
             });
             outline = validateOutline(candidate, origin.requestedChapterCount);
             break;
@@ -125,6 +127,7 @@ export async function generateStory(context: RunContext, onProgress: ProgressRep
         let generated;
         let lastError: unknown;
         for (let attempt = 1; attempt <= 2; attempt += 1) {
+          const retryLabel = attempt === 1 ? '' : 'second draft after a rejected one';
           try {
             generated = await service.text.generate({
               schema: GeneratedStoryChapterSchema,
@@ -138,7 +141,7 @@ export async function generateStory(context: RunContext, onProgress: ProgressRep
                 status: 'running',
                 completed: chaptersByOrder.size,
                 total: origin.requestedChapterCount,
-                detail: `${specification.title} · ${detail} · draft ${attempt} of 2`
+                detail: retryLabel ? `${specification.title} · ${detail} · ${retryLabel}` : `${specification.title} · ${detail}`
               })
             });
             break;

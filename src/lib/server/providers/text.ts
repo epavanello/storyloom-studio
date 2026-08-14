@@ -42,6 +42,14 @@ export class AiSdkStructuredProvider implements StructuredTextProvider {
   }
 }
 
+/** Compresses a provider error into something that still fits on one progress line. */
+function describeFailure(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  const status = /^(\d{3}) ([^:]+)/.exec(message);
+  if (status) return `HTTP ${status[1]} ${status[2].trim()}`;
+  return message.length > 60 ? `${message.slice(0, 60)}…` : message;
+}
+
 export class OpenRouterStructuredProvider implements StructuredTextProvider {
   readonly id = 'openrouter';
 
@@ -55,9 +63,14 @@ export class OpenRouterStructuredProvider implements StructuredTextProvider {
       { role: 'user', content: request.prompt }
     ];
     let lastError: unknown;
+    // Why the previous attempt was abandoned, phrased for the progress line. Empty on the
+    // first attempt, which is exactly when no retry counter should be shown at all.
+    let retryReason = '';
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       const timeoutLabel = timeoutMs >= 120_000 ? `${Math.round(timeoutMs / 60_000)} min` : `${Math.round(timeoutMs / 1_000)}s`;
-      await request.onStatus?.(`OpenRouter request ${attempt} of ${maxAttempts} · timeout ${timeoutLabel}`);
+      await request.onStatus?.(retryReason
+        ? `Asking the model again · retry ${attempt - 1} of ${maxAttempts - 1} · ${retryReason}`
+        : `Waiting for the model to answer · up to ${timeoutLabel}`);
       try {
         const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
           method: 'POST',
@@ -89,6 +102,8 @@ export class OpenRouterStructuredProvider implements StructuredTextProvider {
         } catch (error) {
           lastError = error;
           if (attempt === maxAttempts) break;
+          retryReason = 'the last answer was missing required fields';
+          await request.onStatus?.('The model answered in the wrong shape · asking it to correct the missing fields');
           const issues = error instanceof z.ZodError ? error.issues : [{ message: error instanceof Error ? error.message : 'Invalid JSON' }];
           messages.push(
             { role: 'assistant', content },
@@ -99,13 +114,16 @@ export class OpenRouterStructuredProvider implements StructuredTextProvider {
         lastError = error;
         const fatalClientError = error instanceof Error && /^4\d\d /.test(error.message) && !/^(408|429) /.test(error.message);
         if (fatalClientError) throw error;
+        const timedOut = error instanceof Error && (error.name === 'TimeoutError' || /timed? ?out|aborted/i.test(error.message));
+        const failure = timedOut ? `no answer within ${timeoutLabel}` : `the call failed (${describeFailure(error)})`;
+        retryReason = timedOut ? `the last call ran past ${timeoutLabel}` : `the last call failed (${describeFailure(error)})`;
         if (attempt < maxAttempts) {
           const retryDelayMs = attempt * 2_000;
-          await request.onStatus?.(`OpenRouter request ${attempt} failed · retrying in ${retryDelayMs / 1_000}s`);
+          await request.onStatus?.(`${failure} · retrying in ${retryDelayMs / 1_000}s`);
           await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
         }
       }
     }
-    throw new Error(`OpenRouter could not produce ${request.schemaName} after ${maxAttempts} requests: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
+    throw new Error(`OpenRouter could not produce ${request.schemaName} after ${maxAttempts} ${maxAttempts === 1 ? 'attempt' : 'attempts'}: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
   }
 }
