@@ -235,6 +235,8 @@ Il repository contiene una verticale dimostrativa SvelteKit con:
 - coda BullMQ su Redis, con worker avviabile dentro il processo web o come processo separato;
 - account, sessioni e segregazione dei dati per utente;
 - player con utterance sequenziali e cambi scena;
+- viewer incrementale che mostra piano, tracce audio, allineamenti e scene mentre arrivano;
+- checkpoint durevoli per riusare i passaggi vocali compatibili dopo un riavvio e posizione d'ascolto per account/capitolo;
 - provider demo deterministici;
 - adapter iniziali per endpoint compatibili con OpenAI.
 

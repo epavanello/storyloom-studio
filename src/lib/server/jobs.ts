@@ -224,9 +224,8 @@ export async function deleteJobRecord(userId: string, jobId: string) {
 /**
  * Re-enqueues work that was accepted but never finished, so a restart does not strand
  * it. The in-process queue holds nothing across a restart, which makes the `jobs` table
- * the only durable record of what was owed: anything still queued goes back on the
- * queue, and anything caught mid-run is reported as interrupted rather than left
- * looking active forever.
+ * the durable record of what was owed. Queued and active work goes back on the queue;
+ * completed speech checkpoints let the orchestrator skip compatible passages.
  */
 export async function recoverInterruptedJobs() {
   const queue = getQueueDriver();

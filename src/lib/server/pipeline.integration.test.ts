@@ -150,6 +150,13 @@ describe(`generation pipeline (${usesRedis ? 'redis' : 'in-process'} queue)`, ()
     const audio = rendered!.utterances[0].audio;
     expect(audio.key.startsWith(`books/${bookId}/`)).toBe(true);
     expect((await modules.store.readArtifact(audio)).byteLength).toBeGreaterThan(0);
+
+    const savedCursor = await modules.store.savePlaybackProgress(owner, bookId, chapterId, {
+      utteranceId: rendered!.utterances[0].utterance.id,
+      positionMs: 500
+    });
+    expect((await modules.store.getPlaybackProgress(owner, bookId, chapterId))?.utteranceId).toBe(savedCursor.utteranceId);
+    await expect(modules.store.getPlaybackProgress(stranger, bookId, chapterId)).rejects.toThrow();
   }, 120_000);
 
   it('keeps a bring-your-own key unreadable in the database', async () => {

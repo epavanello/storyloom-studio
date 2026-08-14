@@ -500,7 +500,7 @@
       </section>
 
       {#if activeUtterance}
-        <audio bind:this={audio} src={activeUtterance.audio.path} onloadedmetadata={(event) => event.currentTarget.currentTime = Math.min(activeTimeMs / 1000, event.currentTarget.duration || Infinity)} ontimeupdate={(event) => activeTimeMs = event.currentTarget.currentTime * 1000} onplay={() => playing = true} onpause={() => playing = false} onerror={() => playing = false} onended={() => void nextUtterance(true)}></audio>
+        <audio bind:this={audio} src={activeUtterance.audio.path} onloadedmetadata={(event) => event.currentTarget.currentTime = Math.min(activeTimeMs / 1000, event.currentTarget.duration || Infinity)} ontimeupdate={(event) => activeTimeMs = event.currentTarget.currentTime * 1000} onplay={() => playing = true} onpause={() => { playing = false; persistPlaybackProgress(); }} onerror={() => playing = false} onended={() => void nextUtterance(true)}></audio>
       {/if}
       <section class="transport">
         <button class="round-button" onclick={() => void selectUtterance(Math.max(0, activeIndex - 1))} aria-label="Previous passage">‹</button>

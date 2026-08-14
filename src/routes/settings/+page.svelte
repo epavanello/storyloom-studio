@@ -60,7 +60,7 @@
       </div>
     </dl>
     {#if data.deployment.queueDriver === 'memory'}
-      <p class="settings-note">The queue lives in this process, so no broker is needed. Work already accepted survives a restart because it is re-queued from the database, but anything mid-render is reported as interrupted. Set <code>REDIS_URL</code> to move the queue to Redis, which is required as soon as the worker runs anywhere else.</p>
+      <p class="settings-note">The queue lives in this process, so no broker is needed. Queued and active work is restored from the database after a restart; chapter jobs reuse every compatible speech passage checkpointed before the interruption. Set <code>REDIS_URL</code> to move the queue to Redis, which is required as soon as the worker runs anywhere else.</p>
     {/if}
     {#if data.queue && !data.queue.hasWorker}
       <p class="queue-warning">

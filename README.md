@@ -50,7 +50,7 @@ Both stateful pieces sit behind one interface, so the same code serves a laptop 
 
 A `file:` database and the in-process queue only work when everything runs in one place: two machines cannot share a SQLite file, and nothing outside the process can see an in-memory queue. Selecting either while `STORYLOOM_WORKER_MODE` is not `inline` is refused at startup rather than leaving jobs silently unexecuted.
 
-The in-process queue is not a toy: work already accepted is durable, because the `jobs` table is the record of what is owed and anything still queued is re-enqueued at boot. What it does not survive is a render already in flight, which is reported as interrupted so the user can restart it.
+The in-process queue is not a toy: work already accepted is durable, because the `jobs` table is the record of what is owed. Queued and active jobs are re-enqueued at boot. Chapter jobs checkpoint the validated plan and every completed speech passage in the same durable row, so a restarted worker validates provider, model, voice, direction and artifact availability before reusing audio instead of starting speech from zero.
 
 ### Cost shape
 
@@ -79,7 +79,9 @@ Generated chapters become immutable source text as soon as each chapter complete
 
 Every available chapter can be opened in **Read** mode before registries, voices, audio or images exist. Audiovisual augmentation remains a separate on-demand action, and a prepared chapter can switch between its source text and its performance.
 
-Speech is generated as ordered, independently stored passages. As soon as the first complete passage is available, the active job exposes a private progressive preview so it can be heard while the remaining passages are still being synthesized. Preview playback is intentionally marked as awaiting word alignment; the published chapter render is replaced atomically only after its complete audio timeline and visual cues are ready.
+Speech is generated as ordered, independently stored passages. As soon as the plan exists, the performance viewer opens with empty scene and track slots. Complete speech passages become privately playable one by one, alignment badges update afterward, and generated scenes replace their placeholders as they arrive. The published chapter render is still replaced atomically only after its complete audio timeline and visual cues are ready.
+
+The player stores its listening cursor on pause, passage changes and page exit. The cursor belongs to the signed-in account and chapter, so reopening a completed performance resumes at the saved passage and time without continuously writing playback ticks to the database.
 
 ## Deployment topologies
 

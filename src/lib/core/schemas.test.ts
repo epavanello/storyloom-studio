@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ChapterPlanSchema, GenerationJobSchema } from './schemas';
+import { ChapterGenerationCheckpointSchema, ChapterPlanSchema, GenerationJobSchema } from './schemas';
 
 describe('chapter performance plan', () => {
   it('rejects invalid performance intensity', () => {
@@ -47,6 +47,18 @@ describe('generation job', () => {
     };
     expect(GenerationJobSchema.parse({ ...base, audioPreview: [preview] }).audioPreview[0].utterance.id).toBe('u1');
     expect(GenerationJobSchema.safeParse({ ...base, audioPreview: [{ ...preview, durationMs: 0 }] }).success).toBe(false);
+  });
+
+  it('validates durable chapter checkpoints with their owning job and fingerprint', () => {
+    const plan = ChapterPlanSchema.parse({
+      schemaVersion: 1, chapterId: 'chapter-1', synopsis: '', cast: [], visuals: [], sounds: [],
+      utterances: [{ id: 'u1', order: 0, text: 'Hello', textStart: 0, textEnd: 5, speakerCharacterId: null, direction: { emotion: 'calm', intensity: 0.2, pace: 'natural', pauseAfterMs: 0 } }]
+    });
+    const checkpoint = ChapterGenerationCheckpointSchema.parse({
+      schemaVersion: 1, jobId: 'job-1', userId: 'user-1', bookId: 'book-1', chapterId: 'chapter-1', kind: 'chapter',
+      fingerprint: 'sha256', plan, audioPreview: [], createdAt: base.createdAt, updatedAt: base.updatedAt
+    });
+    expect(checkpoint.jobId).toBe('job-1');
   });
 
   it('rejects a job without an owner, so an unattributed job can never be persisted', () => {
