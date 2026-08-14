@@ -35,6 +35,18 @@ describe('generation job', () => {
     expect(job.steps[0]).toMatchObject({ completed: 3, total: 7 });
     expect(job.startedAt).toBeNull();
     expect(job.error).toBeNull();
+    expect(job.audioPreview).toEqual([]);
+  });
+
+  it('accepts only complete, playable passage previews', () => {
+    const preview = {
+      utterance: { id: 'u1', order: 0, text: 'Hello', textStart: 0, textEnd: 5, speakerCharacterId: null, direction: { emotion: 'calm', intensity: 0.2, pace: 'natural', pauseAfterMs: 100 } },
+      audio: { key: 'books/book-1/audio/u1.wav', path: '/api/artifacts/books/book-1/audio/u1.wav', mimeType: 'audio/wav', provider: 'mock', model: 'mock-tts', createdAt: '2026-01-01T00:00:00.000Z' },
+      voice: { characterId: 'narrator', voiceId: 'narrator', seed: 1, description: 'Narrator', gender: 'neutral', language: 'it', provider: 'mock', model: 'mock-tts' },
+      durationMs: 1200
+    };
+    expect(GenerationJobSchema.parse({ ...base, audioPreview: [preview] }).audioPreview[0].utterance.id).toBe('u1');
+    expect(GenerationJobSchema.safeParse({ ...base, audioPreview: [{ ...preview, durationMs: 0 }] }).success).toBe(false);
   });
 
   it('rejects a job without an owner, so an unattributed job can never be persisted', () => {

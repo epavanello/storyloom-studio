@@ -3,18 +3,20 @@ import {
   ArtifactRefSchema,
   BookManifestSchema,
   ChapterSchema,
+  PlaybackProgressSchema,
   RenderedChapterSchema,
   type ArtifactRef,
   type BookManifest,
   type BookOrigin,
   type Chapter,
   type Character,
+  type PlaybackProgress,
   type RenderedChapter,
   type VoiceProfile,
   type WorldElement
 } from '../core/schemas';
 import { getDb } from './db/client';
-import { books, chapters, renderedChapters } from './db/schema';
+import { books, chapters, playbackProgress, renderedChapters } from './db/schema';
 import { artifactKey, artifactUrl, bookPrefix, getStorage } from './storage/index';
 
 /** Book row plus counts, for library listings that must not load chapter text. */
@@ -234,6 +236,49 @@ export async function getRenderedChapter(bookId: string, chapterId: string): Pro
   // matches the schema must not be silently reported as "not generated yet".
   if (!parsed.success) throw new Error(`Stored render ${chapterId} is incompatible or damaged`, { cause: parsed.error });
   return parsed.data;
+}
+
+export async function getPlaybackProgress(userId: string, bookId: string, chapterId: string): Promise<PlaybackProgress | null> {
+  await assertBookOwner(userId, bookId);
+  const db = getDb();
+  const [row] = await db
+    .select()
+    .from(playbackProgress)
+    .where(and(eq(playbackProgress.userId, userId), eq(playbackProgress.bookId, bookId), eq(playbackProgress.chapterId, chapterId)))
+    .limit(1);
+  if (!row) return null;
+  return PlaybackProgressSchema.parse({ ...row, updatedAt: row.updatedAt.toISOString() });
+}
+
+/** Persists a validated listening cursor only on meaningful playback transitions. */
+export async function savePlaybackProgress(
+  userId: string,
+  bookId: string,
+  chapterId: string,
+  cursor: { utteranceId: string; positionMs: number }
+) {
+  await assertBookOwner(userId, bookId);
+  const rendered = await getRenderedChapter(bookId, chapterId);
+  const utterance = rendered?.utterances.find((item) => item.utterance.id === cursor.utteranceId);
+  if (!utterance) throw new Error('Rendered passage not found');
+  const parsed = PlaybackProgressSchema.parse({
+    schemaVersion: 1,
+    userId,
+    bookId,
+    chapterId,
+    utteranceId: cursor.utteranceId,
+    positionMs: Math.min(Math.round(cursor.positionMs), Math.floor(utterance.durationMs)),
+    updatedAt: new Date().toISOString()
+  });
+  const db = getDb();
+  await db
+    .insert(playbackProgress)
+    .values({ ...parsed, updatedAt: new Date(parsed.updatedAt) })
+    .onConflictDoUpdate({
+      target: [playbackProgress.userId, playbackProgress.bookId, playbackProgress.chapterId],
+      set: { utteranceId: parsed.utteranceId, positionMs: parsed.positionMs, schemaVersion: parsed.schemaVersion, updatedAt: new Date(parsed.updatedAt) }
+    });
+  return parsed;
 }
 
 export async function deleteRenderedChapter(bookId: string, chapterId: string) {

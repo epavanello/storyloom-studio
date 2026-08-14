@@ -191,6 +191,18 @@ export const RenderedUtteranceSchema = z.object({
   alignment: z.enum(['exact', 'approximate'])
 });
 
+/**
+ * A complete audio file that can be auditioned while the rest of the chapter is still
+ * being synthesized. It deliberately has no timeline or word alignment: those only
+ * become authoritative when the complete RenderedChapter is published.
+ */
+export const GenerationAudioPreviewSchema = z.object({
+  utterance: UtteranceSchema,
+  audio: ArtifactRefSchema,
+  voice: VoiceProfileSchema,
+  durationMs: z.number().positive()
+});
+
 export const RenderedVisualSchema = z.object({
   cue: VisualCueSchema,
   image: ArtifactRefSchema,
@@ -219,6 +231,30 @@ export const GenerationJobStepSchema = z.object({
 export const JobKindSchema = z.enum(['story', 'registry', 'chapter', 'chapter-audio', 'character-reference']);
 export const JobStatusSchema = z.enum(['queued', 'active', 'completed', 'failed', 'cancelled']);
 
+export const ChapterGenerationCheckpointSchema = z.object({
+  schemaVersion: z.literal(1),
+  jobId: z.string(),
+  userId: z.string(),
+  bookId: z.string(),
+  chapterId: z.string(),
+  kind: z.enum(['chapter', 'chapter-audio']),
+  fingerprint: z.string(),
+  plan: ChapterPlanSchema,
+  audioPreview: z.array(GenerationAudioPreviewSchema),
+  createdAt: z.string(),
+  updatedAt: z.string()
+});
+
+export const PlaybackProgressSchema = z.object({
+  schemaVersion: z.literal(1),
+  userId: z.string(),
+  bookId: z.string(),
+  chapterId: z.string(),
+  utteranceId: z.string(),
+  positionMs: z.number().int().nonnegative(),
+  updatedAt: z.string()
+});
+
 export const GenerationJobSchema = z.object({
   schemaVersion: z.literal(1),
   id: z.string(),
@@ -239,7 +275,12 @@ export const GenerationJobSchema = z.object({
   startedAt: z.string().nullable().default(null),
   completedAt: z.string().nullable().default(null),
   error: z.string().nullable().default(null),
-  steps: z.array(GenerationJobStepSchema)
+  steps: z.array(GenerationJobStepSchema),
+  /** Redis-only progressive artifacts; the durable render is still published atomically. */
+  audioPreview: z.array(GenerationAudioPreviewSchema).default([]),
+  chapterPlan: ChapterPlanSchema.optional(),
+  alignedPreview: z.array(RenderedUtteranceSchema).default([]),
+  visualPreview: z.array(RenderedVisualSchema).default([])
 });
 
 /** Aggregate queue health, read from Redis so it costs no database compute. */
@@ -264,6 +305,9 @@ export type GeneratedStoryChapter = z.infer<typeof GeneratedStoryChapterSchema>;
 export type Character = z.infer<typeof CharacterSchema>;
 export type ChapterPlan = z.infer<typeof ChapterPlanSchema>;
 export type RenderedChapter = z.infer<typeof RenderedChapterSchema>;
+export type GenerationAudioPreview = z.infer<typeof GenerationAudioPreviewSchema>;
+export type ChapterGenerationCheckpoint = z.infer<typeof ChapterGenerationCheckpointSchema>;
+export type PlaybackProgress = z.infer<typeof PlaybackProgressSchema>;
 export type VoiceProfile = z.infer<typeof VoiceProfileSchema>;
 export type WorldElement = z.infer<typeof WorldElementSchema>;
 export type GenerationJob = z.infer<typeof GenerationJobSchema>;

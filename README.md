@@ -79,6 +79,8 @@ Generated chapters become immutable source text as soon as each chapter complete
 
 Every available chapter can be opened in **Read** mode before registries, voices, audio or images exist. Audiovisual augmentation remains a separate on-demand action, and a prepared chapter can switch between its source text and its performance.
 
+Speech is generated as ordered, independently stored passages. As soon as the first complete passage is available, the active job exposes a private progressive preview so it can be heard while the remaining passages are still being synthesized. Preview playback is intentionally marked as awaiting word alignment; the published chapter render is replaced atomically only after its complete audio timeline and visual cues are ready.
+
 ## Deployment topologies
 
 **1. Everything on one machine** — `.env` + `.env.storyloom-hybrid`

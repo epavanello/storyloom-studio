@@ -3,7 +3,9 @@ import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from 'driz
 import type {
   BookManifest,
   Character,
+  ChapterGenerationCheckpoint,
   GenerationJobStep,
+  PlaybackProgress,
   RenderedChapter,
   VoiceProfile,
   WorldElement
@@ -154,6 +156,8 @@ export const jobs = sqliteTable('jobs', {
   mode: text('mode', { enum: ['mock', 'local', 'cloud', 'hybrid'] }).notNull(),
   attempts: integer('attempts').notNull().default(0),
   steps: text('steps', { mode: 'json' }).$type<GenerationJobStep[]>().notNull().$defaultFn(() => []),
+  /** Durable only after a complete speech artifact is stored; live percentages stay in Redis. */
+  checkpoint: text('checkpoint', { mode: 'json' }).$type<ChapterGenerationCheckpoint>(),
   error: text('error'),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
@@ -167,6 +171,20 @@ export const jobs = sqliteTable('jobs', {
   uniqueIndex('jobs_active_target_idx')
     .on(table.bookId, table.kind, table.targetKey)
     .where(sql`${table.status} in ('queued', 'active')`)
+]);
+
+/** One durable listening cursor per account and chapter; updated at pause/page exit. */
+export const playbackProgress = sqliteTable('playback_progress', {
+  userId: text('user_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
+  bookId: text('book_id').notNull().references(() => books.id, { onDelete: 'cascade' }),
+  chapterId: text('chapter_id').notNull(),
+  schemaVersion: integer('schema_version').notNull().default(1),
+  utteranceId: text('utterance_id').notNull(),
+  positionMs: integer('position_ms').notNull(),
+  updatedAt: updatedAt()
+}, (table) => [
+  primaryKey({ columns: [table.userId, table.bookId, table.chapterId] }),
+  index('playback_progress_book_idx').on(table.bookId)
 ]);
 
 export const booksRelations = relations(books, ({ many, one }) => ({
@@ -189,6 +207,7 @@ export const schema = {
   chapters,
   renderedChapters,
   jobs,
+  playbackProgress,
   booksRelations,
   chaptersRelations
 };

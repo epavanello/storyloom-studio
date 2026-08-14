@@ -239,7 +239,22 @@ export async function recoverInterruptedJobs() {
 
   for (const row of rows) {
     if (row.status === 'active') {
-      await finalize(row.id, 'failed', { error: 'Interrupted when the server restarted. Start it again to resume from cached artifacts.' });
+      const updatedAt = new Date();
+      await db
+        .update(jobs)
+        .set({ status: 'queued', startedAt: null, completedAt: null, error: null, updatedAt })
+        .where(eq(jobs.id, row.id));
+      const recovered = toJob({ ...row, status: 'queued', startedAt: null, completedAt: null, error: null, updatedAt });
+      await queue.publishJobState(recovered);
+      await queue.enqueue({
+        jobId: row.id,
+        userId: row.userId,
+        bookId: row.bookId,
+        chapterId: row.chapterId,
+        characterId: row.characterId,
+        kind: row.kind,
+        force: row.force
+      });
       interrupted += 1;
       continue;
     }
@@ -257,7 +272,7 @@ export async function recoverInterruptedJobs() {
     requeued += 1;
   }
 
-  if (requeued || interrupted) console.log(`[queue] recovered ${requeued} queued job(s), marked ${interrupted} interrupted`);
+  if (requeued || interrupted) console.log(`[queue] recovered ${requeued} queued job(s), resumed ${interrupted} interrupted job(s)`);
   return { requeued, interrupted };
 }
 
@@ -305,7 +320,28 @@ export async function reportJobProgress(jobId: string, update: ProgressUpdate) {
       detail: update.detail ?? candidate.detail
     };
   });
-  await queue.publishJobState({ ...job, steps, updatedAt: new Date().toISOString() });
+  const audioPreview = update.audioPreview
+    ? [
+        ...job.audioPreview.filter((item) => item.utterance.id !== update.audioPreview!.utterance.id),
+        update.audioPreview
+      ].sort((a, b) => a.utterance.order - b.utterance.order)
+    : job.audioPreview;
+  const alignedPreview = update.alignedPreview
+    ? [...job.alignedPreview.filter((item) => item.utterance.id !== update.alignedPreview!.utterance.id), update.alignedPreview]
+      .sort((a, b) => a.utterance.order - b.utterance.order)
+    : job.alignedPreview;
+  const visualPreview = update.visualPreview
+    ? [...job.visualPreview.filter((item) => item.cue.id !== update.visualPreview!.cue.id), update.visualPreview]
+    : job.visualPreview;
+  await queue.publishJobState({
+    ...job,
+    steps,
+    audioPreview,
+    alignedPreview,
+    visualPreview,
+    chapterPlan: update.chapterPlan ?? job.chapterPlan,
+    updatedAt: new Date().toISOString()
+  });
 }
 
 export async function finalize(

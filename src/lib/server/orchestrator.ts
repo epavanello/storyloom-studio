@@ -1,7 +1,7 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { parseBuffer } from 'music-metadata';
 import { z } from 'zod';
-import { BookManifestSchema, ChapterPlanSchema, CharacterSchema, WorldElementSchema, type Character, type RenderedChapter, type WorldElement } from '../core/schemas';
+import { BookManifestSchema, ChapterPlanSchema, CharacterSchema, WorldElementSchema, type BookManifest, type ChapterPlan, type Character, type GenerationAudioPreview, type RenderedChapter, type WorldElement } from '../core/schemas';
 import { locateChapterPlanText, splitAttributedNarration, validateChapterPlan, validateVisualBeatCoverage, visualBeatRange } from '../core/plan';
 import { parseBook } from './ingest';
 import { describeMissingCredentials, type RunContext } from './context';
@@ -9,6 +9,7 @@ import { createBook, getManifest, getRenderedChapter, readArtifact, saveBookRegi
 import { providers } from './providers/router';
 import { withLocalRuntime } from './runtime';
 import { assignVoiceProfiles, voiceFor } from './voices';
+import { clearChapterGenerationCheckpoint, getChapterGenerationCheckpoint, saveChapterGenerationCheckpoint } from './checkpoints';
 
 const RegistryPatchSchema = z.object({
   characters: z.array(CharacterSchema),
@@ -21,6 +22,10 @@ export type ProgressUpdate = {
   completed?: number;
   total?: number;
   detail?: string;
+  audioPreview?: GenerationAudioPreview;
+  chapterPlan?: ChapterPlan;
+  alignedPreview?: RenderedChapter['utterances'][number];
+  visualPreview?: RenderedChapter['visuals'][number];
 };
 
 export type ProgressReporter = (update: ProgressUpdate) => Promise<void>;
@@ -71,6 +76,136 @@ function mergeWorldElements(existing: WorldElement[], incoming: WorldElement[]) 
 function shorten(message: string, limit = 110) {
   const flat = message.replace(/\s+/gu, ' ').trim();
   return flat.length > limit ? `${flat.slice(0, limit)}…` : flat;
+}
+
+type AudioUnit = {
+  utterance: ChapterPlan['utterances'][number];
+  voice: ReturnType<typeof voiceFor>;
+  audio: GenerationAudioPreview['audio'];
+  durationMs: number;
+};
+
+function speechCheckpointFingerprint(plan: ChapterPlan, manifest: BookManifest, speech: ReturnType<typeof providers>['speech']) {
+  const passages = plan.utterances.map((utterance) => {
+    const voice = voiceFor(utterance.speakerCharacterId, manifest);
+    return {
+      utterance,
+      voice: {
+        voiceId: voice.voiceId,
+        seed: voice.seed,
+        language: voice.language,
+        provider: voice.provider,
+        model: voice.model,
+        referenceAudioPath: voice.referenceAudioPath
+      }
+    };
+  });
+  return createHash('sha256').update(JSON.stringify({ schemaVersion: 1, provider: speech.id, model: speech.model, passages })).digest('hex');
+}
+
+async function generateOrResumeChapterAudio(options: {
+  context: RunContext;
+  chapterId: string;
+  kind: 'chapter' | 'chapter-audio';
+  generationId?: string;
+  plan: ChapterPlan;
+  manifest: BookManifest;
+  speech: ReturnType<typeof providers>['speech'];
+  artifactName: (utteranceId: string) => string;
+  onProgress: ProgressReporter;
+  action: 'Generated' | 'Regenerated';
+}) {
+  const { context, chapterId, kind, generationId, plan, manifest, speech, artifactName, onProgress, action } = options;
+  const fingerprint = speechCheckpointFingerprint(plan, manifest, speech);
+  const now = new Date().toISOString();
+  const stored = generationId
+    ? await getChapterGenerationCheckpoint(context.userId, generationId, context.bookId, chapterId)
+    : null;
+  const compatible = stored?.kind === kind && stored.fingerprint === fingerprint;
+  const reusable = new Map<string, GenerationAudioPreview>();
+
+  if (compatible) {
+    for (const preview of stored.audioPreview) {
+      if (!plan.utterances.some((item) => item.id === preview.utterance.id)) continue;
+      try {
+        await readArtifact(preview.audio);
+        reusable.set(preview.utterance.id, preview);
+      } catch {
+        // The checkpoint is only reusable when its immutable artifact still exists.
+      }
+    }
+  }
+
+  const checkpointBase = generationId ? {
+    schemaVersion: 1 as const,
+    jobId: generationId,
+    userId: context.userId,
+    bookId: context.bookId,
+    chapterId,
+    kind,
+    fingerprint,
+    plan,
+    createdAt: compatible ? stored.createdAt : now
+  } : null;
+  if (checkpointBase && !compatible) {
+    await saveChapterGenerationCheckpoint({ ...checkpointBase, audioPreview: [], updatedAt: now });
+  }
+
+  const completed = new Map<string, AudioUnit>();
+  let completedCount = 0;
+  await onProgress({ stepId: 'speech', status: 'running', completed: 0, total: plan.utterances.length, detail: reusable.size ? `Found ${reusable.size} saved passages` : `${action === 'Generated' ? 'Generating' : 'Regenerating'} the first passage` });
+
+  const processPassages = async () => {
+    for (const utterance of plan.utterances) {
+      const voice = voiceFor(utterance.speakerCharacterId, manifest);
+      let preview = reusable.get(utterance.id);
+      if (!preview) {
+        const audio = await speech.synthesize({
+          bookId: context.bookId,
+          artifactName: artifactName(utterance.id),
+          text: utterance.text,
+          voice,
+          emotion: utterance.direction.emotion,
+          intensity: utterance.direction.intensity,
+          pace: utterance.direction.pace
+        });
+        let durationMs = Math.max(800, utterance.text.split(/\s+/).length / 2.45 * 1000);
+        try {
+          const metadata = await parseBuffer(await readArtifact(audio), { mimeType: audio.mimeType });
+          if (metadata.format.duration) durationMs = metadata.format.duration * 1000;
+        } catch { /* retain the explicit approximate duration */ }
+        preview = {
+          utterance,
+          audio,
+          voice: { ...voice, voiceId: audio.voiceId ?? voice.voiceId, provider: audio.provider, model: audio.model },
+          durationMs
+        };
+        reusable.set(utterance.id, preview);
+        if (checkpointBase) {
+          await saveChapterGenerationCheckpoint({
+            ...checkpointBase,
+            audioPreview: plan.utterances.map((item) => reusable.get(item.id)).filter(Boolean) as GenerationAudioPreview[],
+            updatedAt: new Date().toISOString()
+          });
+        }
+      }
+      completed.set(utterance.id, { utterance, voice, audio: preview.audio, durationMs: preview.durationMs });
+      completedCount += 1;
+      const reused = compatible && stored.audioPreview.some((item) => item.utterance.id === utterance.id);
+      await onProgress({
+        stepId: 'speech',
+        completed: completedCount,
+        total: plan.utterances.length,
+        detail: `${reused ? 'Reused' : action} ${completedCount} of ${plan.utterances.length} passages`,
+        audioPreview: preview
+      });
+    }
+  };
+
+  if (reusable.size === plan.utterances.length) await processPassages();
+  else await withLocalRuntime('speech', processPassages);
+  await onProgress({ stepId: 'speech', status: 'completed', completed: plan.utterances.length, total: plan.utterances.length });
+  return plan.utterances.map((utterance) => completed.get(utterance.id)!);
 }
 
 export async function ingestBook(userId: string, fileName: string, bytes: Uint8Array) {
@@ -234,11 +369,34 @@ export async function prepareChapter(
     manifest.voices = assignVoiceProfiles(manifest, service.speech);
     await saveBookRegistry(bookId, { voices: manifest.voices });
   }
-  await onProgress({ stepId: 'plan', status: 'running', completed: 0, total: 1, detail: 'Splitting the chapter into spoken passages and visual beats' });
   let plan: z.infer<typeof ChapterPlanSchema> | undefined;
+  const storedCheckpoint = options.generationId
+    ? await getChapterGenerationCheckpoint(context.userId, options.generationId, bookId, chapterId)
+    : null;
+  if (storedCheckpoint?.kind === 'chapter') {
+    try {
+      plan = validateVisualBeatCoverage(validateChapterPlan(
+        chapter.text,
+        chapter.id,
+        manifest.characters.map((character) => character.id),
+        locateChapterPlanText(chapter.text, splitAttributedNarration(storedCheckpoint.plan)),
+        manifest.worldElements.map((element) => element.id)
+      ), visualRange.minimum, visualRange.maximum);
+    } catch {
+      plan = undefined;
+    }
+  }
+  await onProgress({
+    stepId: 'plan',
+    status: plan ? 'completed' : 'running',
+    completed: plan ? 1 : 0,
+    total: 1,
+    detail: plan ? 'Resuming the validated chapter plan' : 'Splitting the chapter into spoken passages and visual beats',
+    chapterPlan: plan
+  });
   let rejectedPlan: z.infer<typeof ChapterPlanSchema> | undefined;
   let planError = '';
-  await withLocalRuntime('text', async () => {
+  if (!plan) await withLocalRuntime('text', async () => {
     for (let planAttempt = 1; planAttempt <= 3; planAttempt += 1) {
       // The rewrite counter only means something once a plan has actually been rejected,
       // so the first pass says what it is doing instead of counting attempts.
@@ -274,27 +432,20 @@ export async function prepareChapter(
   });
   const finalPlan = plan;
   if (!finalPlan) throw new Error('Chapter planner did not produce a validated plan');
-  await onProgress({ stepId: 'plan', status: 'completed', completed: 1, total: 1, detail: `${finalPlan.utterances.length} passages and ${finalPlan.visuals.length} visual beats planned` });
+  await onProgress({ stepId: 'plan', status: 'completed', completed: 1, total: 1, detail: `${finalPlan.utterances.length} passages and ${finalPlan.visuals.length} visual beats planned`, chapterPlan: finalPlan });
 
-  const audioUtterances: { utterance: typeof finalPlan.utterances[number]; voice: ReturnType<typeof voiceFor>; audio: Awaited<ReturnType<typeof service.speech.synthesize>>; durationMs: number }[] = [];
-  await onProgress({ stepId: 'speech', status: 'running', completed: 0, total: finalPlan.utterances.length, detail: 'Generating the first passage' });
-  await withLocalRuntime('speech', async () => {
-    for (const [index, utterance] of finalPlan.utterances.entries()) {
-      const voice = voiceFor(utterance.speakerCharacterId, manifest);
-      const audio = await service.speech.synthesize({
-        bookId, artifactName: `${chapter.id}-${utterance.id}${generationSuffix}`, text: utterance.text, voice,
-        emotion: utterance.direction.emotion, intensity: utterance.direction.intensity, pace: utterance.direction.pace
-      });
-      let durationMs = Math.max(800, utterance.text.split(/\s+/).length / 2.45 * 1000);
-      try {
-        const metadata = await parseBuffer(await readArtifact(audio), { mimeType: audio.mimeType });
-        if (metadata.format.duration) durationMs = metadata.format.duration * 1000;
-      } catch { /* use estimate */ }
-      audioUtterances.push({ utterance, voice, audio, durationMs });
-      await onProgress({ stepId: 'speech', completed: index + 1, total: finalPlan.utterances.length, detail: `Generated ${index + 1} of ${finalPlan.utterances.length} passages` });
-    }
+  const audioUtterances = await generateOrResumeChapterAudio({
+    context,
+    chapterId,
+    kind: 'chapter',
+    generationId: options.generationId,
+    plan: finalPlan,
+    manifest,
+    speech: service.speech,
+    artifactName: (utteranceId) => `${chapter.id}-${utteranceId}${generationSuffix}`,
+    onProgress,
+    action: 'Generated'
   });
-  await onProgress({ stepId: 'speech', status: 'completed', completed: finalPlan.utterances.length, total: finalPlan.utterances.length });
 
   const renderedUtterances: RenderedChapter['utterances'] = [];
   let timelineMs = 0;
@@ -302,9 +453,10 @@ export async function prepareChapter(
   await withLocalRuntime('alignment', async () => {
     for (const [index, item] of audioUtterances.entries()) {
       const alignment = await service.aligner.align(item.audio, item.utterance.text, item.durationMs);
-      renderedUtterances.push({ utterance: item.utterance, audio: item.audio, voice: { ...item.voice, voiceId: item.audio.voiceId ?? item.voice.voiceId, provider: item.audio.provider, model: item.audio.model }, startMs: timelineMs, durationMs: item.durationMs, words: alignment.words, alignment: alignment.quality });
+      const renderedUtterance = { utterance: item.utterance, audio: item.audio, voice: { ...item.voice, voiceId: item.audio.voiceId ?? item.voice.voiceId, provider: item.audio.provider, model: item.audio.model }, startMs: timelineMs, durationMs: item.durationMs, words: alignment.words, alignment: alignment.quality };
+      renderedUtterances.push(renderedUtterance);
       timelineMs += item.durationMs + item.utterance.direction.pauseAfterMs;
-      await onProgress({ stepId: 'alignment', completed: index + 1, total: audioUtterances.length, detail: `Synchronized ${index + 1} of ${audioUtterances.length} passages` });
+      await onProgress({ stepId: 'alignment', completed: index + 1, total: audioUtterances.length, detail: `Synchronized ${index + 1} of ${audioUtterances.length} passages`, alignedPreview: renderedUtterance });
     }
   });
   await onProgress({ stepId: 'alignment', status: 'completed', completed: audioUtterances.length, total: audioUtterances.length });
@@ -324,9 +476,10 @@ export async function prepareChapter(
         bookId, artifactName: `${chapter.id}-${cue.id}-${manifest.visualStyle.id}${generationSuffix}`, kind: 'scene', characters, worldElements, seed: seed(`${bookId}:${chapter.id}:${cue.id}:${manifest.visualStyle.id}:${options.generationId ?? 'initial'}`), styleId: manifest.visualStyle.id,
         prompt: `${manifest.visualStyle.prompt} Preserve identity and canonical traits from the supplied references, but render them in this exact illustrated medium rather than preserving photographic media. ${cue.prompt}\nShot: ${cue.shot}. Mood: ${cue.mood}. Characters present: ${characters.map((character) => `${character.canonicalName}: ${character.physicalDescription}`).join('; ') || 'none'}. Recurring visual anchors present: ${worldElements.map((element) => `${element.canonicalName}: ${element.visualDescription}`).join('; ') || 'none'}. Compose as one wide 16:9 cinematic storybook frame with all important subjects inside the central safe area. No photography, live-action frame, 3D render, split screen, collage, panels, captions, subtitles, signage, logos, letters, or readable text.`
       });
-      renderedVisuals.push({ cue, image, startMs: anchor?.startMs ?? 0 });
+      const renderedVisual = { cue, image, startMs: anchor?.startMs ?? 0 };
+      renderedVisuals.push(renderedVisual);
       completedVisuals += 1;
-      await onProgress({ stepId: 'visuals', completed: completedVisuals, total: visualJobs.length, detail: `Generated ${completedVisuals} of ${visualJobs.length} scenes` });
+      await onProgress({ stepId: 'visuals', completed: completedVisuals, total: visualJobs.length, detail: `Generated ${completedVisuals} of ${visualJobs.length} scenes`, visualPreview: renderedVisual });
     }
   };
   const plainVisuals = visualJobs.filter(({ characters, worldElements }) => !characters.some((character) => character.referenceImages.length) && !worldElements.some((element) => element.referenceImages.length));
@@ -337,6 +490,7 @@ export async function prepareChapter(
   renderedVisuals.sort((a, b) => finalPlan.visuals.indexOf(a.cue) - finalPlan.visuals.indexOf(b.cue));
   const rendered = { schemaVersion: 1 as const, chapterId, plan: finalPlan, utterances: renderedUtterances, visuals: renderedVisuals, totalDurationMs: Math.max(1, timelineMs), createdAt: new Date().toISOString() };
   await saveRenderedChapter(bookId, rendered);
+  if (options.generationId) await clearChapterGenerationCheckpoint(context.userId, options.generationId);
   return rendered;
 }
 
@@ -371,30 +525,19 @@ export async function regenerateChapterAudio(
   }
 
   const suffix = `-${safePart(generationId)}`;
-  const generated: { utterance: typeof plan.utterances[number]; voice: ReturnType<typeof voiceFor>; audio: Awaited<ReturnType<typeof service.speech.synthesize>>; durationMs: number }[] = [];
-  await onProgress({ stepId: 'speech', status: 'running', completed: 0, total: plan.utterances.length, detail: 'Regenerating the first passage in explicit Italian' });
-  await withLocalRuntime('speech', async () => {
-    for (const [index, utterance] of plan.utterances.entries()) {
-      const voice = voiceFor(utterance.speakerCharacterId, manifest);
-      const audio = await service.speech.synthesize({
-        bookId,
-        artifactName: `${chapterId}-${utterance.id}${suffix}`,
-        text: utterance.text,
-        voice,
-        emotion: utterance.direction.emotion,
-        intensity: utterance.direction.intensity,
-        pace: utterance.direction.pace
-      });
-      let durationMs = Math.max(800, utterance.text.split(/\s+/).length / 2.45 * 1000);
-      try {
-        const metadata = await parseBuffer(await readArtifact(audio), { mimeType: audio.mimeType });
-        if (metadata.format.duration) durationMs = metadata.format.duration * 1000;
-      } catch { /* retain the explicit approximate duration */ }
-      generated.push({ utterance, voice, audio, durationMs });
-      await onProgress({ stepId: 'speech', completed: index + 1, total: plan.utterances.length, detail: `Regenerated ${index + 1} of ${plan.utterances.length} passages` });
-    }
+  await onProgress({ stepId: 'speech', chapterPlan: plan });
+  const generated = await generateOrResumeChapterAudio({
+    context,
+    chapterId,
+    kind: 'chapter-audio',
+    generationId,
+    plan,
+    manifest,
+    speech: service.speech,
+    artifactName: (utteranceId) => `${chapterId}-${utteranceId}${suffix}`,
+    onProgress,
+    action: 'Regenerated'
   });
-  await onProgress({ stepId: 'speech', status: 'completed', completed: generated.length, total: generated.length });
 
   const utterances: RenderedChapter['utterances'] = [];
   let timelineMs = 0;
@@ -402,7 +545,7 @@ export async function regenerateChapterAudio(
   await withLocalRuntime('alignment', async () => {
     for (const [index, item] of generated.entries()) {
       const alignment = await service.aligner.align(item.audio, item.utterance.text, item.durationMs);
-      utterances.push({
+      const renderedUtterance: RenderedChapter['utterances'][number] = {
         utterance: item.utterance,
         audio: item.audio,
         voice: { ...item.voice, voiceId: item.audio.voiceId ?? item.voice.voiceId, provider: item.audio.provider, model: item.audio.model },
@@ -410,9 +553,10 @@ export async function regenerateChapterAudio(
         durationMs: item.durationMs,
         words: alignment.words,
         alignment: alignment.quality
-      });
+      };
+      utterances.push(renderedUtterance);
       timelineMs += item.durationMs + item.utterance.direction.pauseAfterMs;
-      await onProgress({ stepId: 'alignment', completed: index + 1, total: generated.length, detail: `Realigned ${index + 1} of ${generated.length} passages` });
+      await onProgress({ stepId: 'alignment', completed: index + 1, total: generated.length, detail: `Realigned ${index + 1} of ${generated.length} passages`, alignedPreview: renderedUtterance });
     }
   });
   await onProgress({ stepId: 'alignment', status: 'completed', completed: generated.length, total: generated.length });
@@ -430,5 +574,6 @@ export async function regenerateChapterAudio(
     createdAt: new Date().toISOString()
   };
   await saveRenderedChapter(bookId, rendered);
+  await clearChapterGenerationCheckpoint(context.userId, generationId);
   return rendered;
 }

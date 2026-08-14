@@ -12,10 +12,17 @@
   let activeTimeMs = $state(0);
   let playing = $state(false);
   let audio = $state<HTMLAudioElement>();
+  let previewAudio = $state<HTMLAudioElement>();
+  let previewJobId = $state<string>();
+  let previewIndex = $state(0);
+  let previewTimeMs = $state(0);
+  let previewPlaying = $state(false);
+  let previewWaiting = $state(false);
   let scriptScroll = $state<HTMLDivElement>();
   let loadedChapterId = $state<string>();
   let viewMode = $state<'read' | 'performance'>('read');
   let playbackChangeId = 0;
+  let previewPlaybackChangeId = 0;
 
   const chapter = $derived(data.book.chapters.find((item) => item.id === data.chapterId));
   const activeUtterance = $derived(rendered?.utterances[activeIndex]);
@@ -31,6 +38,14 @@
   const registryJobActive = $derived(activeJobs.some((job) => job.kind === 'registry'));
   const latestRelevantJob = $derived(jobs.find((job) => job.kind === 'story' || ((job.kind === 'chapter' || job.kind === 'chapter-audio') && job.chapterId === data.chapterId) || job.kind === 'registry' || job.kind === 'character-reference'));
   const failedJob = $derived(latestRelevantJob?.status === 'failed' ? latestRelevantJob : undefined);
+  const previewJob = $derived(activeJobs.find((job) =>
+    (job.kind === 'chapter' || job.kind === 'chapter-audio')
+    && job.chapterId === data.chapterId
+    && job.audioPreview.length > 0
+  ));
+  const previewPassages = $derived(previewJob?.audioPreview ?? []);
+  const previewPassage = $derived(previewPassages[previewIndex]);
+  const previewSpeechStep = $derived(previewJob?.steps.find((step) => step.id === 'speech'));
   // Work queued with nothing draining it would wait forever and look like a hang.
   const stranded = $derived(Boolean(activeJobs.length && queue && !queue.hasWorker));
   const visualReferencesOutdated = $derived(
@@ -57,6 +72,38 @@
   $effect(() => {
     jobs = data.jobs;
     queue = data.queue;
+  });
+
+  $effect(() => {
+    const jobId = previewJob?.id;
+    const available = previewPassages.length;
+    if (!jobId) {
+      if (previewJobId) {
+        previewPlaybackChangeId += 1;
+        previewAudio?.pause();
+        previewJobId = undefined;
+        previewIndex = 0;
+        previewTimeMs = 0;
+        previewPlaying = false;
+        previewWaiting = false;
+      }
+      return;
+    }
+    if (previewJobId !== jobId) {
+      previewPlaybackChangeId += 1;
+      previewAudio?.pause();
+      previewJobId = jobId;
+      previewIndex = 0;
+      previewTimeMs = 0;
+      previewPlaying = false;
+      previewWaiting = false;
+      return;
+    }
+    if (previewIndex >= available) previewIndex = Math.max(0, available - 1);
+    if (previewWaiting && available > previewIndex + 1) {
+      previewWaiting = false;
+      void selectPreview(previewIndex + 1, true);
+    }
   });
 
   $effect(() => {
@@ -166,9 +213,63 @@
     return Math.round(completedStages / Math.max(1, job.steps.length) * 100);
   }
 
+  async function togglePreviewPlayback() {
+    if (!previewAudio || !previewPassage) return;
+    previewPlaybackChangeId += 1;
+    previewWaiting = false;
+    if (previewPlaying) {
+      previewAudio.pause();
+      previewPlaying = false;
+      return;
+    }
+    audio?.pause();
+    playing = false;
+    try {
+      await previewAudio.play();
+      previewPlaying = true;
+    } catch {
+      previewPlaying = false;
+    }
+  }
+
+  async function selectPreview(index: number, resume = previewPlaying) {
+    if (!previewPassages[index]) return;
+    const changeId = ++previewPlaybackChangeId;
+    previewAudio?.pause();
+    audio?.pause();
+    playing = false;
+    previewPlaying = false;
+    previewWaiting = false;
+    previewIndex = index;
+    previewTimeMs = 0;
+    await tick();
+    if (changeId !== previewPlaybackChangeId || !previewAudio) return;
+    previewAudio.currentTime = 0;
+    if (!resume) return;
+    try {
+      await previewAudio.play();
+      if (changeId === previewPlaybackChangeId) previewPlaying = true;
+    } catch {
+      if (changeId === previewPlaybackChangeId) previewPlaying = false;
+    }
+  }
+
+  async function nextPreview(resume = previewPlaying) {
+    if (previewIndex < previewPassages.length - 1) {
+      await selectPreview(previewIndex + 1, resume);
+      return;
+    }
+    previewPlaying = false;
+    previewWaiting = resume;
+  }
+
   async function togglePlayback() {
     if (!audio || !activeUtterance) return;
     playbackChangeId += 1;
+    previewPlaybackChangeId += 1;
+    previewAudio?.pause();
+    previewPlaying = false;
+    previewWaiting = false;
     if (playing) {
       audio.pause();
       playing = false;
@@ -186,6 +287,10 @@
     if (!rendered || !rendered.utterances[index]) return;
     const changeId = ++playbackChangeId;
     audio?.pause();
+    previewPlaybackChangeId += 1;
+    previewAudio?.pause();
+    previewPlaying = false;
+    previewWaiting = false;
     playing = false;
     activeIndex = index;
     activeTimeMs = Math.max(0, timeMs);
@@ -304,6 +409,30 @@
                 </li>
               {/each}
             </ol>
+            {#if job.id === previewJob?.id && previewPassage}
+              <div class="generation-audio-preview">
+                <audio
+                  bind:this={previewAudio}
+                  src={previewPassage.audio.path}
+                  ontimeupdate={(event) => previewTimeMs = event.currentTarget.currentTime * 1000}
+                  onplay={() => previewPlaying = true}
+                  onpause={() => previewPlaying = false}
+                  onerror={() => previewPlaying = false}
+                  onended={() => void nextPreview(true)}
+                ></audio>
+                <div class="preview-controls">
+                  <button onclick={() => void selectPreview(Math.max(0, previewIndex - 1), previewPlaying)} disabled={previewIndex === 0} aria-label="Previous generated passage">‹</button>
+                  <button class="preview-play" onclick={togglePreviewPlayback} aria-label={previewPlaying ? 'Pause audio preview' : 'Play audio preview'}>{previewPlaying ? 'Ⅱ' : '▶'}</button>
+                  <button onclick={() => void nextPreview(previewPlaying)} disabled={previewIndex >= previewPassages.length - 1} aria-label="Next generated passage">›</button>
+                  <span>{formatTime(previewTimeMs)} / {formatTime(previewPassage.durationMs)}</span>
+                </div>
+                <div class="preview-copy">
+                  <div><strong>Listen while Storyloom works</strong><small>{previewPassages.length}/{previewSpeechStep?.total ?? previewPassages.length} passages ready · word alignment pending</small></div>
+                  <p>{previewPassage.utterance.text}</p>
+                  {#if previewWaiting}<small class="preview-waiting">Waiting for the next generated passage…</small>{/if}
+                </div>
+              </div>
+            {/if}
           </article>
         {/each}
       </section>

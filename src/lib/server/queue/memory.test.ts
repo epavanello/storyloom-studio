@@ -11,7 +11,7 @@ function job(id: string, updatedAt: string, userId = 'user-1'): GenerationJob {
   return {
     schemaVersion: 1, id, kind: 'chapter', bookId: 'book-1', chapterId: 'chapter-1', characterId: null,
     force: false, userId, mode: 'mock', status: 'queued', queuePosition: null, attempts: 0,
-    createdAt: updatedAt, updatedAt, startedAt: null, completedAt: null, error: null, steps: []
+    createdAt: updatedAt, updatedAt, startedAt: null, completedAt: null, error: null, steps: [], audioPreview: [], alignedPreview: [], visualPreview: []
   };
 }
 
@@ -92,5 +92,19 @@ describe('in-process queue', () => {
     await queue.publishJobState(original);
     original.status = 'failed';
     expect((await queue.readLiveJob('a'))?.status).toBe('queued');
+  });
+
+  it('round-trips progressive audio only inside the live job state', async () => {
+    const queue = createMemoryQueue('test');
+    const live = job('audio', '2026-01-01T00:00:00.000Z');
+    live.audioPreview = [{
+      utterance: { id: 'u-1', order: 0, text: 'Ready.', textStart: 0, textEnd: 6, speakerCharacterId: null, direction: { emotion: 'calm', intensity: 0.2, pace: 'natural', pauseAfterMs: 100 } },
+      audio: { key: 'books/book-1/audio/u-1.wav', path: '/api/artifacts/books/book-1/audio/u-1.wav', mimeType: 'audio/wav', provider: 'mock', model: 'mock-tts', createdAt: '2026-01-01T00:00:00.000Z' },
+      voice: { characterId: 'narrator', voiceId: 'narrator', seed: 1, description: 'Narrator', gender: 'neutral', language: 'it', provider: 'mock', model: 'mock-tts' },
+      durationMs: 1000
+    }];
+    await queue.publishJobState(live);
+
+    expect((await queue.readLiveJob('audio'))?.audioPreview[0].audio.key).toContain('/audio/u-1.wav');
   });
 });
