@@ -3,7 +3,7 @@ import type { PageServerLoad } from './$types';
 import { getConfig } from '$lib/server/config';
 import { jobsForUser, queueHealth } from '$lib/server/jobs';
 import { requireUser } from '$lib/server/session';
-import { BookNotFoundError, getManifest, getRenderedChapter } from '$lib/server/store';
+import { BookNotFoundError, getManifest, getPlaybackProgress, getRenderedChapter } from '$lib/server/store';
 import { getVoiceCandidates } from '$lib/server/voice-catalog';
 
 export const load: PageServerLoad = async ({ locals, params, url }) => {
@@ -20,8 +20,9 @@ export const load: PageServerLoad = async ({ locals, params, url }) => {
 
   const config = getConfig();
   const chapterId = url.searchParams.get('chapter') ?? book.chapters[0]?.id;
-  const [rendered, jobs, queue, voiceCandidates] = await Promise.all([
+  const [rendered, playbackProgress, jobs, queue, voiceCandidates] = await Promise.all([
     chapterId ? getRenderedChapter(book.id, chapterId) : Promise.resolve(null),
+    chapterId ? getPlaybackProgress(user.id, book.id, chapterId) : Promise.resolve(null),
     jobsForUser(user.id, { bookId: book.id, limit: 20 }),
     queueHealth().catch(() => null),
     config.technicalUi && config.localTtsEngine === 'chatterbox-v3' ? getVoiceCandidates() : Promise.resolve([])
@@ -36,6 +37,7 @@ export const load: PageServerLoad = async ({ locals, params, url }) => {
     book,
     chapterId,
     rendered,
+    playbackProgress,
     jobs,
     queue,
     voiceCandidates,

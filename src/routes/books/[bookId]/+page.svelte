@@ -21,6 +21,8 @@
   let scriptScroll = $state<HTMLDivElement>();
   let loadedChapterId = $state<string>();
   let viewMode = $state<'read' | 'performance'>('read');
+  let autoOpenedPreviewJobId = $state<string>();
+  let lastSavedCursor = '';
   let playbackChangeId = 0;
   let previewPlaybackChangeId = 0;
 
@@ -41,11 +43,13 @@
   const previewJob = $derived(activeJobs.find((job) =>
     (job.kind === 'chapter' || job.kind === 'chapter-audio')
     && job.chapterId === data.chapterId
-    && job.audioPreview.length > 0
+    && (job.chapterPlan || job.audioPreview.length > 0)
   ));
+  const previewPlan = $derived(previewJob?.chapterPlan);
   const previewPassages = $derived(previewJob?.audioPreview ?? []);
   const previewPassage = $derived(previewPassages[previewIndex]);
   const previewSpeechStep = $derived(previewJob?.steps.find((step) => step.id === 'speech'));
+  const previewVisual = $derived(previewJob?.visualPreview.at(-1));
   // Work queued with nothing draining it would wait forever and look like a hang.
   const stranded = $derived(Boolean(activeJobs.length && queue && !queue.hasWorker));
   const visualReferencesOutdated = $derived(
@@ -62,8 +66,12 @@
       audio?.pause();
       loadedChapterId = chapterId;
       rendered = nextRendered;
-      activeIndex = 0;
-      activeTimeMs = 0;
+      const savedProgress = data.playbackProgress;
+      const savedIndex = nextRendered && savedProgress
+        ? nextRendered.utterances.findIndex((item) => item.utterance.id === savedProgress.utteranceId)
+        : -1;
+      activeIndex = Math.max(0, savedIndex);
+      activeTimeMs = savedIndex >= 0 && savedProgress ? Math.min(savedProgress.positionMs, nextRendered!.utterances[savedIndex].durationMs) : 0;
       playing = false;
       viewMode = nextRendered ? 'performance' : 'read';
     }
@@ -72,6 +80,13 @@
   $effect(() => {
     jobs = data.jobs;
     queue = data.queue;
+  });
+
+  $effect(() => {
+    if (!rendered && previewPlan && previewJob && autoOpenedPreviewJobId !== previewJob.id) {
+      autoOpenedPreviewJobId = previewJob.id;
+      viewMode = 'performance';
+    }
   });
 
   $effect(() => {
@@ -125,7 +140,12 @@
     const timer = setInterval(() => {
       if (activeJobs.length) void refreshJobs();
     }, 1200);
-    return () => clearInterval(timer);
+    const saveOnExit = () => persistPlaybackProgress(true);
+    window.addEventListener('pagehide', saveOnExit);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('pagehide', saveOnExit);
+    };
   });
 
   async function refreshJobs() {
@@ -213,6 +233,23 @@
     return Math.round(completedStages / Math.max(1, job.steps.length) * 100);
   }
 
+  function persistPlaybackProgress(keepalive = false) {
+    if (!activeUtterance || !rendered) return;
+    const payload = {
+      utteranceId: activeUtterance.utterance.id,
+      positionMs: Math.max(0, Math.round(activeTimeMs))
+    };
+    const signature = `${rendered.chapterId}:${payload.utteranceId}:${Math.floor(payload.positionMs / 1000)}`;
+    if (signature === lastSavedCursor) return;
+    lastSavedCursor = signature;
+    void fetch(`/api/books/${data.book.id}/chapters/${rendered.chapterId}/progress`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+      keepalive
+    }).catch(() => { lastSavedCursor = ''; });
+  }
+
   async function togglePreviewPlayback() {
     if (!previewAudio || !previewPassage) return;
     previewPlaybackChangeId += 1;
@@ -273,6 +310,7 @@
     if (playing) {
       audio.pause();
       playing = false;
+      persistPlaybackProgress();
       return;
     }
     try {
@@ -285,6 +323,7 @@
 
   async function selectUtterance(index: number, timeMs = 0, resume = playing) {
     if (!rendered || !rendered.utterances[index]) return;
+    persistPlaybackProgress();
     const changeId = ++playbackChangeId;
     audio?.pause();
     previewPlaybackChangeId += 1;
@@ -310,7 +349,8 @@
     if (!rendered) return;
     if (activeIndex < rendered.utterances.length - 1) {
       await selectUtterance(activeIndex + 1, 0, resume);
-    } else { playing = false; }
+      persistPlaybackProgress();
+    } else { playing = false; persistPlaybackProgress(); }
   }
 
   function seek(event: Event) {
@@ -369,7 +409,7 @@
     <header class="studio-header">
       <div><p class="eyebrow">{chapter ? `Chapter ${chapter.order + 1}` : 'Source manuscript'}</p><h1>{chapter?.title ?? data.book.title}</h1></div>
       <div class="header-actions">
-        {#if rendered && chapter}
+        {#if (rendered || previewPlan) && chapter}
           <div class="reading-mode-switch" aria-label="Chapter view">
             <button class:active={viewMode === 'read'} onclick={() => viewMode = 'read'}>Read</button>
             <button class:active={viewMode === 'performance'} onclick={() => viewMode = 'performance'}>Performance</button>
@@ -409,30 +449,6 @@
                 </li>
               {/each}
             </ol>
-            {#if job.id === previewJob?.id && previewPassage}
-              <div class="generation-audio-preview">
-                <audio
-                  bind:this={previewAudio}
-                  src={previewPassage.audio.path}
-                  ontimeupdate={(event) => previewTimeMs = event.currentTarget.currentTime * 1000}
-                  onplay={() => previewPlaying = true}
-                  onpause={() => previewPlaying = false}
-                  onerror={() => previewPlaying = false}
-                  onended={() => void nextPreview(true)}
-                ></audio>
-                <div class="preview-controls">
-                  <button onclick={() => void selectPreview(Math.max(0, previewIndex - 1), previewPlaying)} disabled={previewIndex === 0} aria-label="Previous generated passage">‹</button>
-                  <button class="preview-play" onclick={togglePreviewPlayback} aria-label={previewPlaying ? 'Pause audio preview' : 'Play audio preview'}>{previewPlaying ? 'Ⅱ' : '▶'}</button>
-                  <button onclick={() => void nextPreview(previewPlaying)} disabled={previewIndex >= previewPassages.length - 1} aria-label="Next generated passage">›</button>
-                  <span>{formatTime(previewTimeMs)} / {formatTime(previewPassage.durationMs)}</span>
-                </div>
-                <div class="preview-copy">
-                  <div><strong>Listen while Storyloom works</strong><small>{previewPassages.length}/{previewSpeechStep?.total ?? previewPassages.length} passages ready · word alignment pending</small></div>
-                  <p>{previewPassage.utterance.text}</p>
-                  {#if previewWaiting}<small class="preview-waiting">Waiting for the next generated passage…</small>{/if}
-                </div>
-              </div>
-            {/if}
           </article>
         {/each}
       </section>
@@ -444,7 +460,7 @@
       <section class="source-reader">
         <div class="source-reader-heading">
           <div><span>{data.book.origin.kind === 'generated' ? 'AI-authored source text' : 'Original source text'}</span><small>{chapter.text.trim().split(/\s+/).length.toLocaleString()} words · media not required</small></div>
-          {#if rendered}<button class="secondary-button" onclick={() => viewMode = 'performance'}>Open performance →</button>{/if}
+          {#if rendered || previewPlan}<button class="secondary-button" onclick={() => viewMode = 'performance'}>{rendered ? 'Open performance' : 'Open live performance'} →</button>{/if}
         </div>
         <article class="source-prose">
           <h2>{chapter.title}</h2>
@@ -461,7 +477,7 @@
           </div>
         {/if}
       </section>
-    {:else if rendered}
+    {:else if rendered && !previewPlan}
       <section class="experience-grid">
         <div class="visual-stage">
           {#if activeVisual}<img src={activeVisual.image.path} alt={activeVisual.cue.prompt} />{/if}
@@ -484,16 +500,57 @@
       </section>
 
       {#if activeUtterance}
-        <audio bind:this={audio} src={activeUtterance.audio.path} ontimeupdate={(event) => activeTimeMs = event.currentTarget.currentTime * 1000} onplay={() => playing = true} onpause={() => playing = false} onerror={() => playing = false} onended={() => void nextUtterance(true)}></audio>
+        <audio bind:this={audio} src={activeUtterance.audio.path} onloadedmetadata={(event) => event.currentTarget.currentTime = Math.min(activeTimeMs / 1000, event.currentTarget.duration || Infinity)} ontimeupdate={(event) => activeTimeMs = event.currentTarget.currentTime * 1000} onplay={() => playing = true} onpause={() => playing = false} onerror={() => playing = false} onended={() => void nextUtterance(true)}></audio>
       {/if}
       <section class="transport">
         <button class="round-button" onclick={() => void selectUtterance(Math.max(0, activeIndex - 1))} aria-label="Previous passage">‹</button>
         <button class="play-button" onclick={togglePlayback} aria-label={playing ? 'Pause' : 'Play'}>{playing ? 'Ⅱ' : '▶'}</button>
         <button class="round-button" onclick={() => void nextUtterance()} aria-label="Next passage">›</button>
         <span class="timecode">{formatTime(globalTime)}</span>
-        <input class="timeline" type="range" min="0" max="100" step="0.05" value={progress} oninput={seek} aria-label="Chapter progress" />
+        <input class="timeline" type="range" min="0" max="100" step="0.05" value={progress} oninput={seek} onchange={() => persistPlaybackProgress()} aria-label="Chapter progress" />
         <span class="timecode">{formatTime(rendered.totalDurationMs)}</span>
         <span class="voice-chip">◉ {activeUtterance?.voice?.voiceId ?? (activeUtterance?.utterance.speakerCharacterId ? 'Character voice' : 'Narrator')}</span>
+      </section>
+    {:else if previewPlan && previewJob}
+      <section class="experience-grid incremental-experience">
+        <div class="visual-stage incremental-visual">
+          {#if previewVisual}
+            <img src={previewVisual.image.path} alt={previewVisual.cue.prompt} />
+            <div class="visual-overlay"><span>LIVE SCENE {previewJob.visualPreview.length.toString().padStart(2, '0')}</span><small>{previewVisual.cue.shot}</small></div>
+          {:else}
+            <div class="scene-placeholder"><div class="spinner"></div><strong>Scenes are being staged</strong><span>Audio can be heard before the first image is ready.</span></div>
+          {/if}
+          <div class="image-dots">{#each previewPlan.visuals as cue}<i class:active={previewJob.visualPreview.some((visual) => visual.cue.id === cue.id)}></i>{/each}</div>
+        </div>
+
+        <div class="reading-panel">
+          <div class="reading-heading"><span>Live performance script</span><small>{previewPassages.length}/{previewSpeechStep?.total ?? previewPlan.utterances.length} audio tracks ready</small></div>
+          <div class="script-scroll" bind:this={scriptScroll}>
+            {#each previewPlan.utterances as utterance}
+              {@const trackIndex = previewPassages.findIndex((item) => item.utterance.id === utterance.id)}
+              {@const track = trackIndex >= 0 ? previewPassages[trackIndex] : undefined}
+              {@const aligned = previewJob.alignedPreview.find((item) => item.utterance.id === utterance.id)}
+              <button class="utterance incremental-track" class:active={trackIndex === previewIndex && Boolean(track)} class:ready={Boolean(track)} disabled={!track} onclick={() => void selectPreview(trackIndex)}>
+                <span class="speaker">{utterance.speakerCharacterId ? data.book.characters.find((character) => character.id === utterance.speakerCharacterId)?.canonicalName ?? utterance.speakerCharacterId : 'Narrator'}</span>
+                <span class="spoken-text">{utterance.text}</span>
+                <span class="direction">{utterance.direction.emotion} · {utterance.direction.pace}<i class:exact={aligned?.alignment === 'exact'}>{aligned ? aligned.alignment : track ? 'audio ready · alignment pending' : 'audio pending'}</i></span>
+              </button>
+            {/each}
+          </div>
+        </div>
+      </section>
+
+      {#if previewPassage}
+        <audio bind:this={previewAudio} src={previewPassage.audio.path} ontimeupdate={(event) => previewTimeMs = event.currentTarget.currentTime * 1000} onplay={() => previewPlaying = true} onpause={() => previewPlaying = false} onerror={() => previewPlaying = false} onended={() => void nextPreview(true)}></audio>
+      {/if}
+      <section class="transport live-transport">
+        <button class="round-button" onclick={() => void selectPreview(Math.max(0, previewIndex - 1), previewPlaying)} disabled={!previewPassage || previewIndex === 0} aria-label="Previous generated passage">‹</button>
+        <button class="play-button" onclick={togglePreviewPlayback} disabled={!previewPassage} aria-label={previewPlaying ? 'Pause audio preview' : 'Play audio preview'}>{previewPlaying ? 'Ⅱ' : '▶'}</button>
+        <button class="round-button" onclick={() => void nextPreview(previewPlaying)} disabled={!previewPassage || previewIndex >= previewPassages.length - 1} aria-label="Next generated passage">›</button>
+        <span class="timecode">{formatTime(previewTimeMs)}</span>
+        <div class="live-track-progress"><i style={`width: ${previewPassage ? Math.min(100, previewTimeMs / previewPassage.durationMs * 100) : 0}%`}></i></div>
+        <span class="timecode">{formatTime(previewPassage?.durationMs ?? 0)}</span>
+        <span class="voice-chip">{previewWaiting ? 'Waiting for the next track…' : previewPassage ? `Track ${previewIndex + 1} · ${previewPassages.length} ready` : 'First audio track pending'}</span>
       </section>
     {:else if !chapter}
       <section class="empty-experience">
