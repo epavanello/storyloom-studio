@@ -38,6 +38,23 @@ describe('OpenRouter structured output', () => {
     expect(JSON.parse(fetchMock.mock.calls[0][1].body).provider).toEqual({ sort: 'throughput', require_parameters: true });
   });
 
+  it('reports that OpenRouter is processing, without implying a false completion percentage', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ choices: [{ message: { content: '{"characters":[]}' } }] }));
+    vi.stubGlobal('fetch', fetchMock);
+    const statuses: string[] = [];
+
+    await new OpenRouterStructuredProvider('deepseek/test', 'test-key').generate({
+      schemaName: 'character-patch',
+      schema: z.object({ characters: z.array(z.string()) }),
+      system: 'Extract characters.',
+      prompt: 'Chapter text',
+      timeoutMs: 300_000,
+      onStatus: async (detail) => { statuses.push(detail); }
+    });
+
+    expect(statuses).toEqual(['OpenRouter sta elaborando la richiesta · limite 5 min']);
+  });
+
   it('keeps the default routing but still demands schema support when sorting is disabled', async () => {
     const fetchMock = vi.fn().mockResolvedValue(Response.json({ choices: [{ message: { content: '{"characters":[]}' } }] }));
     vi.stubGlobal('fetch', fetchMock);

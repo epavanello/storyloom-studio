@@ -95,10 +95,12 @@ export class OpenRouterStructuredProvider implements StructuredTextProvider {
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       const timeoutLabel = timeoutMs >= 120_000 ? `${Math.round(timeoutMs / 60_000)} min` : `${Math.round(timeoutMs / 1_000)}s`;
       const label = retryReason
-        ? `Attempt ${attempt} of ${maxAttempts} · ${retryReason}`
-        : 'Waiting for OpenRouter';
-      await request.onStatus?.(`${label} · up to ${timeoutLabel}`);
-      const stopHeartbeat = startHeartbeat(request.onStatus, (elapsed) => `${label} · ${elapsed} of ${timeoutLabel}`);
+        ? `Tentativo ${attempt} di ${maxAttempts} · ${retryReason}`
+        : 'OpenRouter sta elaborando la richiesta';
+      await request.onStatus?.(`${label} · limite ${timeoutLabel}`);
+      // The provider exposes no completion percentage for one request. Time elapsed is
+      // useful reassurance, but it must not be presented as a percentage or an ETA.
+      const stopHeartbeat = startHeartbeat(request.onStatus, (elapsed) => `${label} · ${elapsed} trascorsi (limite ${timeoutLabel})`);
       try {
         const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
           method: 'POST',
@@ -139,8 +141,8 @@ export class OpenRouterStructuredProvider implements StructuredTextProvider {
           // answer hit the token ceiling — a different problem from a complete answer that
           // simply omitted a field, and worth telling apart on the progress line.
           retryReason = error instanceof SyntaxError
-            ? 'the previous answer was cut off before it finished'
-            : 'the previous answer was missing required fields';
+            ? 'la risposta precedente si è interrotta prima della fine'
+            : 'alla risposta precedente mancavano alcuni campi richiesti';
           const issues = error instanceof z.ZodError ? error.issues : [{ message: error instanceof Error ? error.message : 'Invalid JSON' }];
           messages.push(
             { role: 'assistant', content },
@@ -152,10 +154,10 @@ export class OpenRouterStructuredProvider implements StructuredTextProvider {
         const fatalClientError = error instanceof Error && /^4\d\d /.test(error.message) && !/^(408|429) /.test(error.message);
         if (fatalClientError) throw error;
         const timedOut = error instanceof Error && (error.name === 'TimeoutError' || /timed? ?out|aborted/i.test(error.message));
-        retryReason = timedOut ? `no answer within ${timeoutLabel}` : `the previous call failed (${describeFailure(error)})`;
+        retryReason = timedOut ? `nessuna risposta entro ${timeoutLabel}` : `la richiesta precedente non è riuscita (${describeFailure(error)})`;
         if (attempt < maxAttempts) {
           const retryDelayMs = attempt * 2_000;
-          await request.onStatus?.(`${retryReason} · retrying in ${retryDelayMs / 1_000}s`);
+          await request.onStatus?.(`${retryReason} · nuovo tentativo tra ${retryDelayMs / 1_000}s`);
           await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
         }
       } finally {

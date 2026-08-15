@@ -82,13 +82,13 @@ export async function generateStory(context: RunContext, onProgress: ProgressRep
         status: outline ? 'completed' : 'running',
         completed: outline ? 1 : 0,
         total: 1,
-        detail: outline ? 'Reusing the approved story structure' : 'Designing the complete narrative arc'
+        detail: outline ? 'Riutilizzo la struttura della storia già approvata' : 'Progetto l’arco completo della storia'
       });
 
       if (!outline) {
         let lastError: unknown;
         for (let attempt = 1; attempt <= 2; attempt += 1) {
-          const retryLabel = attempt === 1 ? '' : 'Redesigning the arc after a rejected outline';
+          const retryLabel = attempt === 1 ? '' : 'Riprogetto l’arco dopo una scaletta non valida';
           if (retryLabel) await onProgress({ stepId: 'story-outline', status: 'running', detail: retryLabel });
           try {
             const candidate = await service.text.generate({
@@ -110,7 +110,7 @@ export async function generateStory(context: RunContext, onProgress: ProgressRep
         origin = { ...origin, outline };
         await saveGeneratedStoryState(context.userId, context.bookId, { origin, title: outline.title });
       }
-      await onProgress({ stepId: 'story-outline', status: 'completed', completed: 1, total: 1, detail: `${outline.chapters.length} chapters planned` });
+      await onProgress({ stepId: 'story-outline', status: 'completed', completed: 1, total: 1, detail: `Struttura pronta: ${outline.chapters.length} capitoli` });
 
       const chaptersByOrder = new Map(manifest.chapters.map((chapter) => [chapter.order, chapter]));
       await onProgress({
@@ -118,7 +118,7 @@ export async function generateStory(context: RunContext, onProgress: ProgressRep
         status: 'running',
         completed: chaptersByOrder.size,
         total: origin.requestedChapterCount,
-        detail: chaptersByOrder.size ? `Resuming after ${chaptersByOrder.size} completed chapters` : 'Writing the first complete chapter'
+        detail: chaptersByOrder.size ? `Riprendo da ${chaptersByOrder.size} capitoli già completati` : 'Scrivo il primo capitolo completo'
       });
 
       for (const specification of outline.chapters) {
@@ -127,7 +127,7 @@ export async function generateStory(context: RunContext, onProgress: ProgressRep
         let generated;
         let lastError: unknown;
         for (let attempt = 1; attempt <= 2; attempt += 1) {
-          const retryLabel = attempt === 1 ? '' : 'second draft after a rejected one';
+          const retryLabel = attempt === 1 ? '' : 'seconda bozza dopo un risultato non valido';
           try {
             generated = await service.text.generate({
               schema: GeneratedStoryChapterSchema,
@@ -164,7 +164,7 @@ export async function generateStory(context: RunContext, onProgress: ProgressRep
           stepId: 'story-chapters',
           completed: chaptersByOrder.size,
           total: origin.requestedChapterCount,
-          detail: `Completed ${chaptersByOrder.size} of ${origin.requestedChapterCount} source chapters`
+          detail: `Capitoli pronti: ${chaptersByOrder.size} di ${origin.requestedChapterCount}`
         });
       }
 
@@ -178,7 +178,7 @@ export async function generateStory(context: RunContext, onProgress: ProgressRep
         status: 'completed',
         completed: origin.requestedChapterCount,
         total: origin.requestedChapterCount,
-        detail: 'The complete source manuscript is ready to read or augment'
+        detail: 'Il manoscritto completo è pronto da leggere o arricchire'
       });
     });
   } catch (error) {

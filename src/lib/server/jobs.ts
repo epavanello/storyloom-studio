@@ -30,7 +30,7 @@ function step(id: string, label: string): GenerationJobStep {
 }
 
 export function stepsFor(kind: JobKind): GenerationJobStep[] {
-  if (kind === 'story') return [step('story-outline', 'Design the complete story'), step('story-chapters', 'Write all source chapters')];
+  if (kind === 'story') return [step('story-outline', 'Progetta l’intera storia'), step('story-chapters', 'Scrive tutti i capitoli')];
   if (kind === 'character-reference') return [step('character-reference', 'Regenerate illustrated character reference')];
   if (kind === 'chapter-audio') return [step('speech', 'Regenerate narration and dialogue'), step('alignment', 'Realign words and audio')];
   return kind === 'registry'

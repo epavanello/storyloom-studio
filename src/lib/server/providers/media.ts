@@ -21,6 +21,19 @@ function qwenInstruction(request: SpeechRequest) {
 }
 
 /**
+ * Gemini TTS on OpenRouter only emits headerless 24 kHz mono 16-bit PCM, so we prepend the
+ * RIFF header ourselves to hand the client a file it can actually play.
+ */
+function wavFromPcm(pcm: Uint8Array, sampleRate = 24_000) {
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0); header.writeUInt32LE(36 + pcm.byteLength, 4); header.write('WAVEfmt ', 8);
+  header.writeUInt32LE(16, 16); header.writeUInt16LE(1, 20); header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(sampleRate, 24); header.writeUInt32LE(sampleRate * 2, 28); header.writeUInt16LE(2, 32); header.writeUInt16LE(16, 34);
+  header.write('data', 36); header.writeUInt32LE(pcm.byteLength, 40);
+  return new Uint8Array(Buffer.concat([header, pcm]));
+}
+
+/**
  * Loads the approved reference sheets for the identities actually present in a scene.
  * A reference that cannot be read is dropped rather than silently substituted, so the
  * caller still knows which identities the result was conditioned on.
@@ -123,9 +136,12 @@ export class ChatterboxSpeechProvider implements SpeechProvider {
 export class OpenRouterSpeechProvider implements SpeechProvider {
   readonly id = 'openrouter';
   readonly voiceOptions: readonly VoiceOption[];
+  /** Gemini rejects every response_format except raw PCM; other OpenRouter TTS models return mp3. */
+  private readonly isGemini: boolean;
 
   constructor(readonly model: string, private readonly apiKey: string, voices: string[]) {
-    const catalog = model.startsWith('google/gemini-') ? geminiVoiceOptions : qwenVoiceOptions;
+    this.isGemini = model.startsWith('google/gemini-');
+    const catalog = this.isGemini ? geminiVoiceOptions : qwenVoiceOptions;
     this.voiceOptions = voices.map((id) => catalog.find((voice) => voice.id === id) ?? { id, gender: 'unknown' as const, description: 'provider voice' });
   }
 
@@ -138,15 +154,16 @@ export class OpenRouterSpeechProvider implements SpeechProvider {
         input: request.text,
         voice: request.voice.voiceId,
         seed: request.voice.seed,
-        response_format: 'mp3'
+        response_format: this.isGemini ? 'pcm' : 'mp3'
       })
     });
+    const payload = new Uint8Array(await response.arrayBuffer());
     return saveArtifact(
       request.bookId,
-      `audio/${safePart(request.artifactName)}.mp3`,
-      new Uint8Array(await response.arrayBuffer()),
+      `audio/${safePart(request.artifactName)}.${this.isGemini ? 'wav' : 'mp3'}`,
+      this.isGemini ? wavFromPcm(payload) : payload,
       {
-        mimeType: 'audio/mpeg', provider: this.id, model: this.model,
+        mimeType: this.isGemini ? 'audio/wav' : 'audio/mpeg', provider: this.id, model: this.model,
         voiceId: request.voice.voiceId,
         generationId: response.headers.get('x-generation-id') ?? undefined
       }

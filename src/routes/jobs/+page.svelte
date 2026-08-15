@@ -62,6 +62,10 @@
     return Math.round(done / Math.max(1, job.steps.length) * 100);
   }
 
+  function stepPercent(completed: number, total: number, status: string) {
+    return status === 'completed' ? 100 : Math.round(Math.min(1, completed / Math.max(1, total)) * 100);
+  }
+
   function when(value: string | null) {
     return value ? new Date(value).toLocaleString() : '—';
   }
@@ -130,7 +134,7 @@
           {#each job.steps as step}
             <li class:done={step.status === 'completed'} class:current={step.status === 'running'} class:failed={step.status === 'failed'}>
               <i>{step.status === 'completed' ? '✓' : step.status === 'running' ? '•' : step.status === 'failed' ? '!' : '○'}</i>
-              <div><span>{step.label}</span>{#if step.detail}<small>{step.detail}</small>{/if}</div>
+              <div><span>{step.label}</span>{#if step.detail}<small>{step.detail}</small>{/if}{#if step.total > 1}<div class="job-step-progress" role="progressbar" aria-label={`Avanzamento: ${step.label}`} aria-valuemin="0" aria-valuemax="100" aria-valuenow={stepPercent(step.completed, step.total, step.status)}><i style={`width: ${stepPercent(step.completed, step.total, step.status)}%`}></i></div>{/if}</div>
               {#if step.total > 1}<b>{step.completed}/{step.total}</b>{/if}
             </li>
           {/each}

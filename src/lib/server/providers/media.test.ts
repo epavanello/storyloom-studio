@@ -10,6 +10,7 @@ vi.mock('../store', () => ({
   }))
 }));
 
+import { saveArtifact } from '../store';
 import { ChatterboxSpeechProvider, OpenAiCompatibleImageProvider, OpenAiCompatibleSpeechProvider, OpenRouterSpeechProvider } from './media';
 import type { ImageRequest } from './contracts';
 
@@ -22,14 +23,32 @@ describe('OpenRouter speech adapter', () => {
       headers: { 'content-type': 'audio/mpeg', 'x-generation-id': 'gen-123' }
     }));
     vi.stubGlobal('fetch', fetchMock);
-    const provider = new OpenRouterSpeechProvider('google/gemini-3.1-flash-tts-preview', 'test-key', ['Kore', 'Puck']);
+    const provider = new OpenRouterSpeechProvider('qwen/qwen3-tts-flash', 'test-key', ['Kore', 'Puck']);
     const artifact = await provider.synthesize({
       bookId: 'book', artifactName: 'line', text: 'Buongiorno.', emotion: 'calm', intensity: 0.4, pace: 'natural',
       voice: { characterId: 'anna', voiceId: 'Kore', seed: 42, description: 'firm female voice', gender: 'female', language: 'it', provider: 'openrouter', model: provider.model }
     });
     const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
     expect(body).toMatchObject({ voice: 'Kore', seed: 42, input: 'Buongiorno.', response_format: 'mp3' });
-    expect(artifact).toMatchObject({ voiceId: 'Kore', generationId: 'gen-123' });
+    expect(artifact).toMatchObject({ voiceId: 'Kore', generationId: 'gen-123', mimeType: 'audio/mpeg' });
+  });
+
+  it('asks Gemini for PCM and stores it as a playable WAV', async () => {
+    const pcm = new Uint8Array([1, 2, 3, 4]);
+    const fetchMock = vi.fn().mockResolvedValue(new Response(pcm, { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = new OpenRouterSpeechProvider('google/gemini-3.1-flash-tts-preview', 'test-key', ['Kore']);
+    const artifact = await provider.synthesize({
+      bookId: 'book', artifactName: 'line', text: 'Buongiorno.', emotion: 'calm', intensity: 0.4, pace: 'natural',
+      voice: { characterId: 'anna', voiceId: 'Kore', seed: 42, description: 'firm female voice', gender: 'female', language: 'it', provider: 'openrouter', model: provider.model }
+    });
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    expect(body.response_format).toBe('pcm');
+    expect(artifact).toMatchObject({ mimeType: 'audio/wav', path: '/api/artifacts/book/audio/line.wav' });
+    const saved = Buffer.from(vi.mocked(saveArtifact).mock.calls.at(-1)![2]);
+    expect(saved.subarray(0, 4).toString()).toBe('RIFF');
+    expect(saved.readUInt32LE(24)).toBe(24_000);
+    expect(saved.byteLength).toBe(44 + pcm.byteLength);
   });
 });
 

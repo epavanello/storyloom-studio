@@ -233,6 +233,10 @@
     return Math.round(completedStages / Math.max(1, job.steps.length) * 100);
   }
 
+  function stepProgress(completed: number, total: number, status: string) {
+    return status === 'completed' ? 100 : Math.round(Math.min(1, completed / Math.max(1, total)) * 100);
+  }
+
   function persistPlaybackProgress(keepalive = false) {
     if (!activeUtterance || !rendered) return;
     const payload = {
@@ -429,14 +433,14 @@
 
     {#if activeJobs.length}
       <section class="jobs-panel" aria-live="polite">
-        <div class="jobs-heading"><div class="spinner"></div><div><strong>Storyloom is still working</strong><span>Progress is held in the queue, so it survives a browser reload and a server restart.</span></div></div>
+        <div class="jobs-heading"><div class="spinner"></div><div><strong>Storyloom sta ancora lavorando</strong><span>Lo stato è salvato nella coda: non perderai l’avanzamento ricaricando la pagina o riavviando il server.</span></div></div>
         {#if stranded}
           <p class="queue-warning">No worker is draining the queue, so this job will wait until one is. {data.workerMode === 'inline' ? 'The web process should be running a worker — check its logs.' : `Start \`${workerCommand}\` on the machine that runs inference.`}</p>
         {/if}
         {#each activeJobs as job}
           <article class="job-card">
             <div class="job-summary">
-              <div><strong>{job.kind === 'story' ? 'Writing the complete source story' : job.kind === 'registry' ? 'Continuity registries' : job.kind === 'character-reference' ? `Character reference · ${data.book.characters.find((character) => character.id === job.characterId)?.canonicalName ?? job.characterId}` : job.kind === 'chapter-audio' ? `Audio · ${data.book.chapters.find((item) => item.id === job.chapterId)?.title ?? 'Chapter'}` : data.book.chapters.find((item) => item.id === job.chapterId)?.title ?? 'Chapter performance'}</strong><span>{job.status === 'queued' ? `Queued${job.queuePosition ? ` · position ${job.queuePosition}` : ''}` : 'Generating now'}</span></div>
+              <div><strong>{job.kind === 'story' ? 'Scrittura del manoscritto' : job.kind === 'registry' ? 'Registri di continuità' : job.kind === 'character-reference' ? `Riferimento del personaggio · ${data.book.characters.find((character) => character.id === job.characterId)?.canonicalName ?? job.characterId}` : job.kind === 'chapter-audio' ? `Audio · ${data.book.chapters.find((item) => item.id === job.chapterId)?.title ?? 'Capitolo'}` : data.book.chapters.find((item) => item.id === job.chapterId)?.title ?? 'Performance del capitolo'}</strong><span>{job.status === 'queued' ? `In coda${job.queuePosition ? ` · posizione ${job.queuePosition}` : ''}` : 'Generazione in corso'}</span></div>
               <b>{jobProgress(job)}%</b>
             </div>
             <div class="job-progress"><i style={`width: ${jobProgress(job)}%`}></i></div>
@@ -444,7 +448,7 @@
               {#each job.steps as item}
                 <li class:done={item.status === 'completed'} class:current={item.status === 'running'} class:failed={item.status === 'failed'}>
                   <i>{item.status === 'completed' ? '✓' : item.status === 'running' ? '•' : item.status === 'failed' ? '!' : '○'}</i>
-                  <div><span>{item.label}</span>{#if item.detail}<small>{item.detail}</small>{/if}</div>
+                  <div><span>{item.label}</span>{#if item.detail}<small>{item.detail}</small>{/if}{#if item.total > 1}<div class="job-step-progress" role="progressbar" aria-label={`Avanzamento: ${item.label}`} aria-valuemin="0" aria-valuemax="100" aria-valuenow={stepProgress(item.completed, item.total, item.status)}><i style={`width: ${stepProgress(item.completed, item.total, item.status)}%`}></i></div>{/if}</div>
                   {#if item.total > 1}<b>{item.completed}/{item.total}</b>{/if}
                 </li>
               {/each}
