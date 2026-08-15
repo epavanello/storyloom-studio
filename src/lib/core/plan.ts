@@ -154,19 +154,168 @@ export function validateVisualBeatCoverage(plan: ChapterPlan, minimum: number, m
   return plan;
 }
 
+type Utterance = ChapterPlan['utterances'][number];
+type NormalizedText = { normalized: string; offsets: number[] };
+type SourceRange = { start: number; end: number };
+
+// Retyping a passage with straight quotes, a plain hyphen or a collapsed line break is the
+// most common way a planner stops matching the source verbatim. Folding those variants — and
+// case — lets the passage be located anyway; the range it resolves to is still exact.
+const matchFolds = new Map([
+  ['«', '"'], ['»', '"'], ['“', '"'], ['”', '"'], ['„', '"'], ['‟', '"'], ['‹', '"'], ['›', '"'],
+  ['‘', "'"], ['’', "'"], ['‚', "'"], ['‛', "'"],
+  ['—', '-'], ['–', '-'], ['―', '-'], ['−', '-']
+]);
+
+function foldForMatch(char: string) {
+  const folded = matchFolds.get(char);
+  if (folded) return folded;
+  // Dropping the accent makes the comparison independent of the Unicode normal form the planner
+  // happened to emit: an "è" typed as a single character and one typed as "e" plus a combining
+  // grave both fold to "e". A fold that changes length would desynchronise the offset index.
+  const base = char.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+  return base.length === 1 ? base : char;
+}
+
+/**
+ * Builds a comparison form of the text together with, for every character it contains, the
+ * offset it came from in the original. Whitespace runs collapse to a single space and leading
+ * whitespace is dropped, so a located range never starts or ends on a blank character.
+ */
+function normalizeForMatch(text: string): NormalizedText {
+  let normalized = '';
+  const offsets: number[] = [];
+  let whitespaceStart = -1;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (/\s/u.test(char)) {
+      if (whitespaceStart < 0) whitespaceStart = index;
+      continue;
+    }
+    // A standalone combining mark carries no position of its own: the character it decorates
+    // already anchors the range, so skipping it keeps both normal forms comparable.
+    if (/\p{M}/u.test(char)) continue;
+    if (whitespaceStart >= 0 && normalized) {
+      normalized += ' ';
+      offsets.push(whitespaceStart);
+    }
+    whitespaceStart = -1;
+    normalized += foldForMatch(char);
+    offsets.push(index);
+  }
+  return { normalized, offsets };
+}
+
+function findRange(source: NormalizedText, needle: string, from: number) {
+  const at = source.normalized.indexOf(needle, from);
+  if (at < 0) return null;
+  return {
+    range: { start: source.offsets[at], end: source.offsets[at + needle.length - 1] + 1 },
+    normalizedEnd: at + needle.length
+  };
+}
+
+/**
+ * The performable paragraphs inside a stretch of source text the plan left uncovered. Splitting
+ * on blank lines keeps a passage the planner dropped from becoming one unreadable block.
+ */
+function uncoveredParagraphs(sourceText: string, from: number, to: number): SourceRange[] {
+  const ranges: SourceRange[] = [];
+  let index = from;
+  for (const piece of sourceText.slice(from, to).split(/(\n[ \t]*\n[\s]*)/u)) {
+    const start = index;
+    index += piece.length;
+    if (!speakable.test(piece)) continue;
+    ranges.push({ start: start + (piece.length - piece.trimStart().length), end: index - (piece.length - piece.trimEnd().length) });
+  }
+  return ranges;
+}
+
+/**
+ * Resolves every planned passage to the exact source range it performs.
+ *
+ * A planner that quietly reformats or drops source text used to leave its own invented offsets
+ * in place, which surfaced later as a wall of overlap and coverage errors. Instead the text is
+ * located here: a passage that cannot be found is dropped rather than trusted, whatever source
+ * text no passage covers comes back as narration, and the result is contiguous by construction.
+ */
 export function locateChapterPlanText(sourceText: string, value: unknown): ChapterPlan {
   const plan = ChapterPlanSchema.parse(value);
-  let cursor = 0;
-  return {
-    ...plan,
-    utterances: plan.utterances.map((utterance, index) => {
-      const textStart = sourceText.indexOf(utterance.text, cursor);
-      if (textStart < 0) return { ...utterance, order: index };
-      const textEnd = textStart + utterance.text.length;
-      cursor = textEnd;
-      return { ...utterance, order: index, textStart, textEnd };
-    })
+  const source = normalizeForMatch(sourceText);
+  const takenIds = new Set(plan.utterances.map((utterance) => utterance.id));
+  const placed: Utterance[] = [];
+  const unmatched: { id: string; position: number }[] = [];
+  let normalizedCursor = 0;
+  let sourceCursor = 0;
+  let recovered = 0;
+
+  const recoverNarration = (range: SourceRange) => {
+    let id = `recovered-${recovered += 1}`;
+    while (takenIds.has(id)) id = `recovered-${recovered += 1}`;
+    takenIds.add(id);
+    placed.push({
+      id,
+      order: placed.length,
+      text: sourceText.slice(range.start, range.end),
+      textStart: range.start,
+      textEnd: range.end,
+      speakerCharacterId: null,
+      direction: { emotion: 'neutral', intensity: 0.3, pace: 'natural', pauseAfterMs: 120 }
+    });
   };
+
+  for (const utterance of plan.utterances) {
+    const needle = normalizeForMatch(utterance.text).normalized;
+    const found = needle ? findRange(source, needle, normalizedCursor) : null;
+    if (!found) {
+      unmatched.push({ id: utterance.id, position: placed.length });
+      continue;
+    }
+    for (const range of uncoveredParagraphs(sourceText, sourceCursor, found.range.start)) recoverNarration(range);
+    placed.push({
+      ...utterance,
+      order: placed.length,
+      text: sourceText.slice(found.range.start, found.range.end),
+      textStart: found.range.start,
+      textEnd: found.range.end
+    });
+    normalizedCursor = found.normalizedEnd;
+    sourceCursor = found.range.end;
+  }
+  for (const range of uncoveredParagraphs(sourceText, sourceCursor, sourceText.length)) recoverNarration(range);
+
+  if (sourceText.trim() && unmatched.length === plan.utterances.length) {
+    throw new Error('no planned passage matches the chapter text');
+  }
+
+  // Punctuation the split left between two passages — a period outside a closing quotation
+  // mark — belongs to the passage before it; carrying it there keeps coverage contiguous.
+  let cursor = 0;
+  for (const utterance of placed) {
+    const residue = sourceText.slice(cursor, utterance.textStart);
+    const previous = placed[utterance.order - 1];
+    if (residue.trim() && previous) {
+      previous.textEnd = cursor + residue.trimEnd().length;
+      previous.text = sourceText.slice(previous.textStart, previous.textEnd);
+    } else if (residue.trim()) {
+      utterance.textStart = cursor + (residue.length - residue.trimStart().length);
+      utterance.text = sourceText.slice(utterance.textStart, utterance.textEnd);
+    }
+    cursor = utterance.textEnd;
+  }
+  const last = placed.at(-1);
+  if (last && sourceText.slice(cursor).trim()) {
+    last.textEnd = sourceText.trimEnd().length;
+    last.text = sourceText.slice(last.textStart, last.textEnd);
+  }
+
+  // A cue anchored to a dropped passage moves to whatever now performs that part of the chapter.
+  const anchors = new Map(unmatched.map(({ id, position }) => [id, (placed[position] ?? placed.at(-1))?.id]));
+  const remapAnchor = <T extends { utteranceId: string }>(cue: T): T => {
+    const anchor = anchors.get(cue.utteranceId);
+    return anchor ? { ...cue, utteranceId: anchor } : cue;
+  };
+  return { ...plan, utterances: placed, visuals: plan.visuals.map(remapAnchor), sounds: plan.sounds.map(remapAnchor) };
 }
 
 function duplicateValues(values: string[]) {

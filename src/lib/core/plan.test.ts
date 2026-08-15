@@ -9,7 +9,7 @@ function plan(text: string) {
     cast: ['anna'],
     utterances: [
       {
-        id: 'u-1', order: 0, text, textStart: 0, textEnd: text.length, speakerCharacterId: 'anna',
+        id: 'u-1', order: 0, text, textStart: 0, textEnd: text.length, speakerCharacterId: 'anna' as string | null,
         direction: { emotion: 'calm', intensity: 0.5, pace: 'natural' as const, pauseAfterMs: 0 }
       }
     ],
@@ -77,7 +77,7 @@ describe('chapter plan validation', () => {
     const split = locateChapterPlanText(source, splitAttributedNarration(plan(source)));
     expect(split.utterances.map(({ text, speakerCharacterId }) => ({ text, speakerCharacterId }))).toEqual([
       { text: '«Non lo so»', speakerCharacterId: 'anna' },
-      { text: ', disse Anna, ', speakerCharacterId: null },
+      { text: ', disse Anna,', speakerCharacterId: null },
       { text: '«davvero».', speakerCharacterId: 'anna' }
     ]);
     expect(() => validateChapterPlan(source, 'chapter-1', ['anna'], split)).not.toThrow();
@@ -95,8 +95,8 @@ describe('chapter plan validation', () => {
     const source = '— Lo so — disse Anna — non è vero.';
     const split = locateChapterPlanText(source, splitAttributedNarration(plan(source)));
     expect(split.utterances.map(({ text, speakerCharacterId }) => ({ text, speakerCharacterId }))).toEqual([
-      { text: '— Lo so ', speakerCharacterId: 'anna' },
-      { text: '— disse Anna ', speakerCharacterId: null },
+      { text: '— Lo so', speakerCharacterId: 'anna' },
+      { text: '— disse Anna', speakerCharacterId: null },
       { text: '— non è vero.', speakerCharacterId: 'anna' }
     ]);
     expect(() => validateChapterPlan(source, 'chapter-1', ['anna'], split)).not.toThrow();
@@ -111,7 +111,7 @@ describe('chapter plan validation', () => {
     const source = 'Anna, che l’ho vista, disse: «l’ho fatto io».';
     const split = locateChapterPlanText(source, splitAttributedNarration(plan(source)));
     expect(split.utterances.map(({ text, speakerCharacterId }) => ({ text, speakerCharacterId }))).toEqual([
-      { text: 'Anna, che l’ho vista, disse: ', speakerCharacterId: null },
+      { text: 'Anna, che l’ho vista, disse:', speakerCharacterId: null },
       { text: '«l’ho fatto io».', speakerCharacterId: 'anna' }
     ]);
     expect(() => validateChapterPlan(source, 'chapter-1', ['anna'], split)).not.toThrow();
@@ -121,8 +121,66 @@ describe('chapter plan validation', () => {
     const source = '«Lo so, disse Anna. «Davvero».';
     const split = locateChapterPlanText(source, splitAttributedNarration(plan(source)));
     expect(split.utterances.map(({ text, speakerCharacterId }) => ({ text, speakerCharacterId }))).toEqual([
-      { text: '«Lo so, disse Anna. ', speakerCharacterId: null },
+      { text: '«Lo so, disse Anna.', speakerCharacterId: null },
       { text: '«Davvero».', speakerCharacterId: 'anna' }
     ]);
+  });
+
+  it('locates a passage the planner re-typed with different quotation marks and line breaks', () => {
+    const source = 'Anna aprì la porta.\n«Sei tu?»';
+    const generated = plan('Anna aprì la porta.');
+    generated.utterances[0].speakerCharacterId = null;
+    generated.utterances.push({
+      ...generated.utterances[0], id: 'u-2', order: 1, text: '"Sei  tu?"', speakerCharacterId: 'anna', textStart: 0, textEnd: 10
+    });
+    const located = locateChapterPlanText(source, generated);
+    expect(located.utterances.map(({ id, text }) => ({ id, text }))).toEqual([
+      { id: 'u-1', text: 'Anna aprì la porta.' },
+      { id: 'u-2', text: '«Sei tu?»' }
+    ]);
+    expect(() => validateChapterPlan(source, 'chapter-1', ['anna'], located)).not.toThrow();
+  });
+
+  it('locates a passage the planner emitted in a different Unicode normal form', () => {
+    const source = 'Anna però non è là.';
+    const generated = plan(source.normalize('NFD'));
+    expect(generated.utterances[0].text).not.toBe(source);
+    const located = locateChapterPlanText(source, generated);
+    expect(located.utterances[0].text).toBe(source);
+    expect(() => validateChapterPlan(source, 'chapter-1', ['anna'], located)).not.toThrow();
+  });
+
+  it('reads source text the planner dropped as narration instead of failing validation', () => {
+    const source = 'Anna entrò.\n\nIl corridoio era vuoto.\n\n«Sei tu?»';
+    const generated = plan('Anna entrò.');
+    generated.utterances[0].speakerCharacterId = null;
+    generated.utterances.push({
+      ...generated.utterances[0], id: 'u-2', order: 1, text: '«Sei tu?»', speakerCharacterId: 'anna', textStart: 0, textEnd: 9
+    });
+    const located = locateChapterPlanText(source, generated);
+    expect(located.utterances.map(({ text, speakerCharacterId }) => ({ text, speakerCharacterId }))).toEqual([
+      { text: 'Anna entrò.', speakerCharacterId: null },
+      { text: 'Il corridoio era vuoto.', speakerCharacterId: null },
+      { text: '«Sei tu?»', speakerCharacterId: 'anna' }
+    ]);
+    expect(() => validateChapterPlan(source, 'chapter-1', ['anna'], located)).not.toThrow();
+  });
+
+  it('drops an invented passage and re-anchors the cues that pointed at it', () => {
+    const source = 'Anna entrò. Il corridoio era vuoto.';
+    const generated = plan('Anna entrò.');
+    generated.utterances[0].speakerCharacterId = null;
+    generated.utterances.push({
+      ...generated.utterances[0], id: 'u-2', order: 1, text: 'Anna sorrise al portiere.', textStart: 0, textEnd: 25
+    });
+    generated.visuals[0].utteranceId = 'u-2';
+    const located = locateChapterPlanText(source, generated);
+    expect(located.utterances.map(({ text }) => text)).toEqual(['Anna entrò.', 'Il corridoio era vuoto.']);
+    expect(located.visuals[0].utteranceId).toBe(located.utterances[1].id);
+    expect(() => validateChapterPlan(source, 'chapter-1', ['anna'], located)).not.toThrow();
+  });
+
+  it('refuses a plan whose passages belong to another text', () => {
+    expect(() => locateChapterPlanText('Anna entrò.', plan('Marco salì le scale.'))).toThrow(/no planned passage matches/);
   });
 });
