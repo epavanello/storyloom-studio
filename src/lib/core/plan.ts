@@ -1,24 +1,110 @@
 import { ChapterPlanSchema, type ChapterPlan } from './schemas';
 
-const quotePairs = new Map([['«', '»'], ['“', '”'], ['‹', '›'], ['"', '"']]);
+const quotePairs = new Map([['«', '»'], ['“', '”'], ['„', '“'], ['‹', '›'], ['‘', '’'], ['"', '"']]);
+// Italian and French prose often open dialogue with a dash instead of a quotation mark, and
+// close the spoken part with a second dash that introduces the attribution.
+const dashMarks = new Set(['—', '–', '―']);
+const letter = /\p{L}/u;
+const speakable = /[\p{L}\p{N}]/u;
+
+type DialogueSpan = { start: number; end: number };
+type NarrationPart = { text: string; speakerCharacterId: string | null };
+
+function isWordApostrophe(text: string, index: number) {
+  const mark = text[index];
+  if (mark !== '’' && mark !== "'") return false;
+  return letter.test(text[index - 1] ?? '') && letter.test(text[index + 1] ?? '');
+}
+
+function findClosingMark(text: string, closing: string, from: number) {
+  for (let index = text.indexOf(closing, from); index >= 0; index = text.indexOf(closing, index + 1)) {
+    if (!isWordApostrophe(text, index)) return index;
+  }
+  return -1;
+}
+
+function quotedSpans(text: string): DialogueSpan[] {
+  const spans: DialogueSpan[] = [];
+  for (let cursor = 0; cursor < text.length; cursor += 1) {
+    const opening = text[cursor];
+    const closing = quotePairs.get(opening);
+    if (!closing) continue;
+    const end = findClosingMark(text, closing, cursor + 1);
+    if (end < 0) continue;
+    // An opening mark that reappears before its own closing mark means the first quote is never
+    // closed inside this passage. Let the later mark open the span instead of swallowing the
+    // narrator's attribution that sits between them.
+    if (opening !== closing) {
+      const reopened = text.indexOf(opening, cursor + 1);
+      if (reopened >= 0 && reopened < end) continue;
+    }
+    spans.push({ start: cursor, end: end + 1 });
+    cursor = end;
+  }
+  return spans;
+}
+
+function dashedSpans(text: string): DialogueSpan[] {
+  const spans: DialogueSpan[] = [];
+  for (let lineStart = 0; lineStart <= text.length; ) {
+    const lineBreak = text.indexOf('\n', lineStart);
+    const lineEnd = lineBreak < 0 ? text.length : lineBreak;
+    const line = text.slice(lineStart, lineEnd);
+    const opening = line.search(/\S/u);
+    // Only a line that starts with a dash follows the convention; a dash used mid-sentence as a
+    // parenthetical is narration and must not be read as dialogue.
+    if (opening >= 0 && dashMarks.has(line[opening])) {
+      const marks: number[] = [];
+      for (let index = opening; index < line.length; index += 1) if (dashMarks.has(line[index])) marks.push(index);
+      for (let mark = 0; mark < marks.length; mark += 2) {
+        spans.push({ start: lineStart + marks[mark], end: lineStart + (marks[mark + 1] ?? line.length) });
+      }
+    }
+    lineStart = lineEnd + 1;
+  }
+  return spans;
+}
+
+function mergeUnspeakableParts(parts: NarrationPart[]) {
+  const merged: NarrationPart[] = [];
+  for (const part of parts) {
+    if (!part.text) continue;
+    const previous = merged.at(-1);
+    if (!previous) {
+      merged.push({ ...part });
+      continue;
+    }
+    // A fragment with no letters or digits — the sentence-final period left outside the closing
+    // quotation mark, the space between two quoted lines — is not a passage anyone can perform.
+    // Keeping it attached to a neighbour also preserves exact source coverage.
+    if (!speakable.test(part.text)) {
+      previous.text += part.text;
+      continue;
+    }
+    if (!speakable.test(previous.text)) {
+      previous.text += part.text;
+      previous.speakerCharacterId = part.speakerCharacterId;
+      continue;
+    }
+    if (previous.speakerCharacterId === part.speakerCharacterId) {
+      previous.text += part.text;
+      continue;
+    }
+    merged.push({ ...part });
+  }
+  return merged;
+}
 
 export function splitAttributedNarration(value: unknown): ChapterPlan {
   const plan = ChapterPlanSchema.parse(value);
   const anchorMap = new Map<string, string>();
   const utterances = plan.utterances.flatMap((utterance) => {
     if (!utterance.speakerCharacterId) return [utterance];
-    const spans: { start: number; end: number }[] = [];
-    for (let cursor = 0; cursor < utterance.text.length; cursor += 1) {
-      const closing = quotePairs.get(utterance.text[cursor]);
-      if (!closing) continue;
-      const end = utterance.text.indexOf(closing, cursor + 1);
-      if (end < 0) continue;
-      spans.push({ start: cursor, end: end + 1 });
-      cursor = end;
-    }
+    const quoted = quotedSpans(utterance.text);
+    const spans = quoted.length ? quoted : dashedSpans(utterance.text);
     if (!spans.length) return [utterance];
 
-    const parts: { text: string; speakerCharacterId: string | null }[] = [];
+    const parts: NarrationPart[] = [];
     let cursor = 0;
     for (const span of spans) {
       if (span.start > cursor) parts.push({ text: utterance.text.slice(cursor, span.start), speakerCharacterId: null });
@@ -26,8 +112,8 @@ export function splitAttributedNarration(value: unknown): ChapterPlan {
       cursor = span.end;
     }
     if (cursor < utterance.text.length) parts.push({ text: utterance.text.slice(cursor), speakerCharacterId: null });
-    const meaningful = parts.filter((part) => part.text.length > 0);
-    if (meaningful.length === 1) return [utterance];
+    const meaningful = mergeUnspeakableParts(parts);
+    if (meaningful.length < 2) return [utterance];
 
     const split = meaningful.map((part, index) => ({
       ...utterance,
