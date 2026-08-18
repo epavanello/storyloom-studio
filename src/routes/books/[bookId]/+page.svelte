@@ -392,7 +392,7 @@
             {/each}
           </nav>
           <div class="mobile-menu-links"><a href="/jobs">Job queue</a><a href="/settings">Settings</a></div>
-          {#if data.runtime.technicalUi}<button class="danger-button" onclick={deleteBook} disabled={activeJobs.length > 0}>Move book to trash</button>{/if}
+          <button class="danger-button" onclick={deleteBook} disabled={activeJobs.length > 0}>Move book to trash</button>
         </div>
       </details>
     </div>
@@ -413,7 +413,7 @@
       </nav>
       <div class="runtime-card"><span><i></i> Runtime · {data.runtime.mode}</span><strong>{data.runtime.mode === 'mock' ? 'Demo provider' : data.runtime.text}</strong><small>{data.runtime.mode === 'mock' ? 'Configure local or cloud models in .env' : `${data.runtime.speech} · ${data.runtime.image} · ${data.runtime.alignment}`}</small></div>
       <nav class="side-links"><a href="/jobs">Job queue</a><a href="/settings">Settings</a></nav>
-      {#if data.runtime.technicalUi}<button class="danger-button" onclick={deleteBook} disabled={activeJobs.length > 0}>Move book to trash</button>{/if}
+      <button class="danger-button" onclick={deleteBook} disabled={activeJobs.length > 0}>Move book to trash</button>
     </div>
   </aside>
 
@@ -422,7 +422,7 @@
       <div><p class="eyebrow">{chapter ? `Chapter ${chapter.order + 1}` : 'Source manuscript'}</p><h1>{chapter?.title ?? data.book.title}</h1></div>
     </header>
 
-    {#if chapter && (rendered || previewPlan || data.runtime.technicalUi)}
+    {#if chapter}
       <div class="chapter-view-bar">
         {#if rendered || previewPlan}
           <div class="reading-mode-switch" aria-label="Chapter view">
@@ -430,21 +430,19 @@
             <button class:active={viewMode === 'performance'} onclick={() => viewMode = 'performance'}>Watch & listen</button>
           </div>
         {/if}
-        {#if data.runtime.technicalUi}
-          <details class="chapter-tools">
-            <summary>Chapter options</summary>
-            <div>
-              <p>{data.book.registryStatus === 'ready' && !visualReferencesOutdated ? 'The cast and recurring places are ready, helping scenes stay visually consistent.' : visualReferencesOutdated ? 'Some illustrated references need to be refreshed before the next generation.' : 'Storyloom is still preparing the cast and recurring places.'}</p>
-              {#if rendered}<p>{rendered.utterances.every((item) => item.alignment === 'exact') ? 'Text timing is exact.' : 'Text highlighting uses approximate timing.'}</p>{/if}
-              {#if data.book.registryStatus !== 'ready'}
-                <button class="secondary-button" onclick={prepareRegistry} disabled={registryJobActive}>Build cast & places</button>
-              {:else if visualReferencesOutdated}
-                <button class="secondary-button" onclick={prepareRegistry} disabled={registryJobActive}>Refresh illustrated references</button>
-              {/if}
-              {#if rendered}<button class="secondary-button" onclick={regenerateAudio} disabled={chapterJobActive}>{audioJobActive ? 'Regenerating audio…' : 'Regenerate all audio'}</button><button class="secondary-button" onclick={regenerateChapter} disabled={chapterJobActive}>Regenerate chapter</button>{/if}
-            </div>
-          </details>
-        {/if}
+        <details class="chapter-tools">
+          <summary>Chapter options</summary>
+          <div>
+            <p>{data.book.registryStatus === 'ready' && !visualReferencesOutdated ? 'The cast and recurring places are ready, helping scenes stay visually consistent.' : visualReferencesOutdated ? 'Some illustrated references need to be refreshed before the next generation.' : 'Storyloom is still preparing the cast and recurring places.'}</p>
+            {#if rendered && data.runtime.technicalUi}<p>{rendered.utterances.every((item) => item.alignment === 'exact') ? 'Text timing is exact.' : 'Text highlighting uses approximate timing.'}</p>{/if}
+            {#if data.book.registryStatus !== 'ready'}
+              <button class="secondary-button" onclick={prepareRegistry} disabled={registryJobActive}>Build cast & places</button>
+            {:else if visualReferencesOutdated && data.runtime.technicalUi}
+              <button class="secondary-button" onclick={prepareRegistry} disabled={registryJobActive}>Refresh illustrated references</button>
+            {/if}
+            {#if rendered}<button class="secondary-button" onclick={regenerateAudio} disabled={chapterJobActive}>{audioJobActive ? 'Regenerating audio…' : 'Regenerate all audio'}</button><button class="secondary-button" onclick={regenerateChapter} disabled={chapterJobActive}>Regenerate chapter</button>{/if}
+          </div>
+        </details>
       </div>
     {/if}
 
@@ -491,7 +489,7 @@
           <h2>{chapter.title}</h2>
           {#each chapter.text.split(/\n{2,}/) as paragraph}<p>{paragraph}</p>{/each}
         </article>
-        {#if !rendered && data.runtime.technicalUi}
+        {#if !rendered}
           <div class="augment-callout">
             <div><strong>{storySourceReady ? 'Ready to augment this chapter?' : 'Finish the source manuscript first'}</strong><span>{storySourceReady ? 'Voices, acting directions and scenes are generated separately. This readable source text will not be rewritten.' : 'Completed chapters are already safe and readable. Resume to generate only the missing chapters.'}</span></div>
             {#if storySourceReady}
@@ -593,12 +591,12 @@
             {@const voice = data.book.voices.find((profile) => profile.characterId === character.id)}
             <article class="character-card">
               {#if character.referenceImages[0]}<img src={character.referenceImages[0].path} alt={`${character.canonicalName} reference`} />{:else}<div class="character-placeholder">{character.canonicalName.slice(0, 1)}</div>{/if}
-              <div><strong>{character.canonicalName}</strong><span>{character.narrativeRole}</span><p>{character.physicalDescription}</p>{#if voice}<small>Voice · {voice.voiceId} · {voice.gender}</small>{/if}{#if data.runtime.technicalUi}<button class="debug-action" onclick={() => regenerateCharacter(character.id)} disabled={activeJobs.some((job) => job.kind === 'character-reference' && job.characterId === character.id)}>Regenerate reference</button>{/if}</div>
+              <div><strong>{character.canonicalName}</strong><span>{character.narrativeRole}</span><p>{character.physicalDescription}</p>{#if voice}<small>Voice · {voice.voiceId} · {voice.gender}</small>{/if}<button class="debug-action" onclick={() => regenerateCharacter(character.id)} disabled={activeJobs.some((job) => job.kind === 'character-reference' && job.characterId === character.id)}>Regenerate reference</button></div>
             </article>
           {/each}
         </div>
       {:else}
-        <div class="registry-empty"><span>Characters will appear here after the registry pass.</span>{#if data.runtime.technicalUi && storySourceReady}<button class="text-button" onclick={prepareRegistry} disabled={registryJobActive}>Build character registry</button>{/if}</div>
+        <div class="registry-empty"><span>Characters will appear here after the registry pass.</span>{#if storySourceReady}<button class="text-button" onclick={prepareRegistry} disabled={registryJobActive}>Build character registry</button>{/if}</div>
       {/if}
     </section>{/if}
 
