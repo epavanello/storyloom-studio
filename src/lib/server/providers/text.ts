@@ -1,7 +1,7 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { generateText, Output } from 'ai';
 import { z } from 'zod';
-import type { StructuredRequest, StructuredTextProvider } from './contracts';
+import type { ProviderStatus, StructuredRequest, StructuredTextProvider } from './contracts';
 
 export class AiSdkStructuredProvider implements StructuredTextProvider {
   readonly id: string;
@@ -42,32 +42,22 @@ export class AiSdkStructuredProvider implements StructuredTextProvider {
   }
 }
 
-function formatElapsed(seconds: number) {
-  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`;
-}
-
 /**
- * Keeps the progress line moving while one request is in flight. A single call can occupy
- * five minutes, and a status line that never changes for that long reads as a hang rather
- * than as work in progress. Status failures are swallowed on purpose: a heartbeat must
- * never be the thing that fails a generation.
+ * Keeps a request visibly alive while it runs. A single call can occupy five minutes, and
+ * a step that never moves for that long reads as a hang rather than as work in progress.
+ * The provider exposes no completion percentage, so what is reported is elapsed time
+ * against the time budget: enough to animate a bar, never an estimate of the answer.
+ * Status failures are swallowed on purpose: a heartbeat must never be the thing that
+ * fails a generation.
  */
-function startHeartbeat(onStatus: ((detail: string) => Promise<void>) | undefined, label: (elapsed: string) => string) {
+function startHeartbeat(onStatus: ((status: ProviderStatus) => Promise<void>) | undefined, detail: string, timeoutMs: number) {
   if (!onStatus) return () => {};
   const startedAt = Date.now();
   const timer = setInterval(() => {
-    void onStatus(label(formatElapsed(Math.round((Date.now() - startedAt) / 1_000)))).catch(() => {});
-  }, 15_000);
+    void onStatus({ detail, progress: Math.min(1, (Date.now() - startedAt) / timeoutMs) }).catch(() => {});
+  }, 5_000);
   timer.unref?.();
   return () => clearInterval(timer);
-}
-
-/** Compresses a provider error into something that still fits on one progress line. */
-function describeFailure(error: unknown) {
-  const message = error instanceof Error ? error.message : String(error);
-  const status = /^(\d{3}) ([^:]+)/.exec(message);
-  if (status) return `HTTP ${status[1]} ${status[2].trim()}`;
-  return message.length > 60 ? `${message.slice(0, 60)}…` : message;
 }
 
 export class OpenRouterStructuredProvider implements StructuredTextProvider {
@@ -89,18 +79,14 @@ export class OpenRouterStructuredProvider implements StructuredTextProvider {
       { role: 'user', content: request.prompt }
     ];
     let lastError: unknown;
-    // Why the previous attempt was abandoned, phrased for the progress line. Empty on the
-    // first attempt, which is exactly when no attempt counter should be shown at all.
+    // Why the previous attempt was abandoned, phrased for a reader who does not know what
+    // a schema is. Empty on the first attempt, which is exactly when no attempt counter
+    // should be shown at all.
     let retryReason = '';
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      const timeoutLabel = timeoutMs >= 120_000 ? `${Math.round(timeoutMs / 60_000)} min` : `${Math.round(timeoutMs / 1_000)}s`;
-      const label = retryReason
-        ? `Tentativo ${attempt} di ${maxAttempts} · ${retryReason}`
-        : 'OpenRouter sta elaborando la richiesta';
-      await request.onStatus?.(`${label} · limite ${timeoutLabel}`);
-      // The provider exposes no completion percentage for one request. Time elapsed is
-      // useful reassurance, but it must not be presented as a percentage or an ETA.
-      const stopHeartbeat = startHeartbeat(request.onStatus, (elapsed) => `${label} · ${elapsed} trascorsi (limite ${timeoutLabel})`);
+      const label = retryReason ? `Attempt ${attempt} of ${maxAttempts} · ${retryReason}` : 'Working on it';
+      await request.onStatus?.({ detail: label, progress: 0 });
+      const stopHeartbeat = startHeartbeat(request.onStatus, label, timeoutMs);
       try {
         const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
           method: 'POST',
@@ -141,8 +127,8 @@ export class OpenRouterStructuredProvider implements StructuredTextProvider {
           // answer hit the token ceiling — a different problem from a complete answer that
           // simply omitted a field, and worth telling apart on the progress line.
           retryReason = error instanceof SyntaxError
-            ? 'la risposta precedente si è interrotta prima della fine'
-            : 'alla risposta precedente mancavano alcuni campi richiesti';
+            ? 'the last answer stopped halfway'
+            : 'the last answer came back incomplete';
           const issues = error instanceof z.ZodError ? error.issues : [{ message: error instanceof Error ? error.message : 'Invalid JSON' }];
           messages.push(
             { role: 'assistant', content },
@@ -154,10 +140,10 @@ export class OpenRouterStructuredProvider implements StructuredTextProvider {
         const fatalClientError = error instanceof Error && /^4\d\d /.test(error.message) && !/^(408|429) /.test(error.message);
         if (fatalClientError) throw error;
         const timedOut = error instanceof Error && (error.name === 'TimeoutError' || /timed? ?out|aborted/i.test(error.message));
-        retryReason = timedOut ? `nessuna risposta entro ${timeoutLabel}` : `la richiesta precedente non è riuscita (${describeFailure(error)})`;
+        retryReason = timedOut ? 'the last answer took too long' : 'the last try did not go through';
         if (attempt < maxAttempts) {
           const retryDelayMs = attempt * 2_000;
-          await request.onStatus?.(`${retryReason} · nuovo tentativo tra ${retryDelayMs / 1_000}s`);
+          await request.onStatus?.({ detail: `${retryReason} · trying again in ${retryDelayMs / 1_000}s`, progress: 0 });
           await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
         }
       } finally {

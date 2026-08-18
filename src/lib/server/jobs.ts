@@ -29,18 +29,22 @@ function step(id: string, label: string): GenerationJobStep {
   return { id, label, status: 'pending', completed: 0, total: 1 };
 }
 
+/**
+ * Step labels are read by people who did not build the pipeline, so they name what is
+ * happening to the book rather than the stage of the machine doing it.
+ */
 export function stepsFor(kind: JobKind): GenerationJobStep[] {
-  if (kind === 'story') return [step('story-outline', 'Progetta l’intera storia'), step('story-chapters', 'Scrive tutti i capitoli')];
-  if (kind === 'character-reference') return [step('character-reference', 'Regenerate illustrated character reference')];
-  if (kind === 'chapter-audio') return [step('speech', 'Regenerate narration and dialogue'), step('alignment', 'Realign words and audio')];
+  if (kind === 'story') return [step('story-outline', 'Plan the story'), step('story-chapters', 'Write the chapters')];
+  if (kind === 'character-reference') return [step('character-reference', 'Draw this character again')];
+  if (kind === 'chapter-audio') return [step('speech', 'Record the voices'), step('alignment', 'Match the words to the audio')];
   return kind === 'registry'
-    ? [step('registry-analysis', 'Read chapters and build continuity registries'), step('registry-references', 'Generate selected continuity references')]
+    ? [step('registry-analysis', 'Read the book'), step('registry-references', 'Draw the cast and the places')]
     : [
-        step('registry', 'Lock character, voice, and world identities'),
+        step('registry', 'Get the cast ready'),
         step('plan', 'Direct the chapter'),
-        step('speech', 'Generate narration and dialogue'),
-        step('alignment', 'Synchronize words and audio'),
-        step('visuals', 'Stage visual scenes')
+        step('speech', 'Record the voices'),
+        step('alignment', 'Match the words to the audio'),
+        step('visuals', 'Illustrate the scenes')
       ];
 }
 
@@ -222,6 +226,55 @@ export async function deleteJobRecord(userId: string, jobId: string) {
 }
 
 /**
+ * Puts a failed job back on the queue under its own id.
+ *
+ * The id is the point: a chapter job stores its validated plan and every synthesized
+ * passage in a checkpoint keyed by that id, so resuming the same job reuses work that was
+ * already paid for, while starting a fresh job would silently buy all of it again. It is
+ * therefore the correct answer to a provider that refused mid-run — an exhausted key, a
+ * rate limit — once the cause is fixed.
+ */
+export async function resumeGenerationJob(userId: string, jobId: string): Promise<GenerationJob> {
+  const db = getDb();
+  const [row] = await db.select().from(jobs).where(and(eq(jobs.id, jobId), eq(jobs.userId, userId))).limit(1);
+  if (!row) throw new Error('Job not found');
+  if (row.status === 'queued' || row.status === 'active') return decorate(toJob(row));
+  if (row.status === 'completed') throw new Error('This job already completed');
+  if (row.status === 'cancelled') throw new Error('A cancelled job cannot be resumed. Start the generation again.');
+  await assertBookOwner(userId, row.bookId);
+
+  // Another job may already be working on the same target, in which case resuming would
+  // both duplicate the work and violate the partial unique index that guards it.
+  const [conflict] = await db
+    .select()
+    .from(jobs)
+    .where(and(eq(jobs.bookId, row.bookId), eq(jobs.kind, row.kind), inArray(jobs.status, ['queued', 'active'])))
+    .orderBy(desc(jobs.createdAt));
+  if (conflict?.targetKey === row.targetKey) return decorate(toJob(conflict));
+
+  const updatedAt = new Date();
+  // A step that failed goes back to pending; completed steps stay completed, so the
+  // progress view resumes where it stopped instead of restarting at zero.
+  const steps = row.steps.map((step) => (step.status === 'failed' ? { ...step, status: 'pending' as const } : step));
+  await db
+    .update(jobs)
+    .set({ status: 'queued', steps, error: null, startedAt: null, completedAt: null, updatedAt })
+    .where(eq(jobs.id, jobId));
+  const job = toJob({ ...row, status: 'queued', steps, error: null, startedAt: null, completedAt: null, updatedAt });
+  await getQueueDriver().publishJobState(job);
+  await getQueueDriver().enqueue({
+    jobId: row.id,
+    userId: row.userId,
+    bookId: row.bookId,
+    chapterId: row.chapterId,
+    characterId: row.characterId,
+    kind: row.kind,
+    force: row.force
+  });
+  return decorate(job);
+}
+
+/**
  * Re-enqueues work that was accepted but never finished, so a restart does not strand
  * it. The in-process queue holds nothing across a restart, which makes the `jobs` table
  * the durable record of what was owed. Queued and active work goes back on the queue;
@@ -316,7 +369,11 @@ export async function reportJobProgress(jobId: string, update: ProgressUpdate) {
       status: update.status ?? candidate.status,
       completed: update.completed ?? candidate.completed,
       total: update.total ?? candidate.total,
-      detail: update.detail ?? candidate.detail
+      detail: update.detail ?? candidate.detail,
+      // Time-based progress lives only as long as the call reporting it: any other update
+      // is a real change of state, and keeping a stale fraction would let the bar jump
+      // backwards the moment the next call starts its own clock.
+      progress: update.progress === undefined ? undefined : Math.min(1, Math.max(0, update.progress))
     };
   });
   const audioPreview = update.audioPreview
@@ -354,8 +411,9 @@ export async function finalize(
   if (!row) return null;
 
   const steps = (live?.steps ?? row.steps).map((candidate) => {
-    if (status === 'completed') return { ...candidate, status: 'completed' as const, completed: candidate.total };
-    if (candidate.status === 'running') return { ...candidate, status: status === 'failed' ? ('failed' as const) : ('pending' as const) };
+    // No call is in flight once the job is over, so no step keeps a moving bar.
+    if (status === 'completed') return { ...candidate, status: 'completed' as const, completed: candidate.total, progress: undefined };
+    if (candidate.status === 'running') return { ...candidate, status: status === 'failed' ? ('failed' as const) : ('pending' as const), progress: undefined };
     return candidate;
   });
   const completedAt = new Date();

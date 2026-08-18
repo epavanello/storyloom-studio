@@ -185,6 +185,29 @@ describe(`generation pipeline (${usesRedis ? 'redis' : 'in-process'} queue)`, ()
     await expect(modules.jobs.assertNoActiveJobs(owner, bookId)).resolves.toBeUndefined();
   }, 30_000);
 
+  it('resumes a failed job under its own id so its checkpoint stays usable', async () => {
+    const manifest = await modules.store.getManifest(owner, bookId);
+    const job = await modules.jobs.startGenerationJob(owner, { kind: 'chapter', bookId, chapterId: manifest.chapters[0].id, force: true });
+    // Whatever the provider was, this is what the worker records when one refuses mid-run.
+    await modules.jobs.finalize(job.id, 'failed', { error: 'The OpenRouter key reached its spending limit' });
+
+    const resumed = await modules.jobs.resumeGenerationJob(owner, job.id);
+    // Same id: that is what lets prepareChapter find the plan and passages it already paid for.
+    expect(resumed.id).toBe(job.id);
+    expect(resumed.status).toBe('queued');
+    expect(resumed.error).toBeNull();
+    expect(resumed.steps.some((step) => step.status === 'failed')).toBe(false);
+    expect((await modules.queue.getQueueDriver().snapshot()).waiting).toBeGreaterThan(0);
+
+    // Resuming twice joins the queued job instead of enqueuing it again.
+    expect((await modules.jobs.resumeGenerationJob(owner, job.id)).id).toBe(job.id);
+    // And it is only for jobs that actually stopped: a stranger cannot resume this one.
+    await expect(modules.jobs.resumeGenerationJob(stranger, job.id)).rejects.toThrow();
+
+    expect((await modules.jobs.cancelJob(owner, job.id)).status).toBe('cancelled');
+    await expect(modules.jobs.resumeGenerationJob(owner, job.id)).rejects.toThrow(/cancelled/i);
+  }, 30_000);
+
   it('keeps a trashed book recoverable, and purging removes rows and objects together', async () => {
     const rendered = await modules.store.getRenderedChapter(bookId, (await modules.store.getManifest(owner, bookId)).chapters[0].id);
     const audio = rendered!.utterances[0].audio;

@@ -225,7 +225,13 @@ export const GenerationJobStepSchema = z.object({
   status: z.enum(['pending', 'running', 'completed', 'failed']),
   completed: z.number().int().nonnegative(),
   total: z.number().int().nonnegative(),
-  detail: z.string().optional()
+  detail: z.string().optional(),
+  /**
+   * Share of the time budget a single in-flight model call has already used. It exists so
+   * a step with nothing countable in it can still show visible movement; it is never a
+   * completion estimate, and it only lives as long as the call reporting it.
+   */
+  progress: z.number().min(0).max(1).optional()
 });
 
 export const JobKindSchema = z.enum(['story', 'registry', 'chapter', 'chapter-audio', 'character-reference']);

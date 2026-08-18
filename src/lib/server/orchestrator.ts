@@ -23,6 +23,12 @@ export type ProgressUpdate = {
   completed?: number;
   total?: number;
   detail?: string;
+  /**
+   * Share of the time budget the model call behind this step has used. Reported only
+   * while that call is in flight, so the step's bar keeps moving without the page having
+   * to print a stopwatch.
+   */
+  progress?: number;
   audioPreview?: GenerationAudioPreview;
   chapterPlan?: ChapterPlan;
   alignedPreview?: RenderedChapter['utterances'][number];
@@ -71,12 +77,6 @@ function mergeWorldElements(existing: WorldElement[], incoming: WorldElement[]) 
     else if (candidate.referencePriority === 'useful' && match.referencePriority === 'none') match.referencePriority = 'useful';
   }
   return merged;
-}
-
-/** Keeps a rejection reason readable on a single progress line. */
-function shorten(message: string, limit = 110) {
-  const flat = message.replace(/\s+/gu, ' ').trim();
-  return flat.length > limit ? `${flat.slice(0, limit)}…` : flat;
 }
 
 type AudioUnit = {
@@ -154,7 +154,7 @@ async function generateOrResumeChapterAudio(options: {
 
   const completed = new Map<string, AudioUnit>();
   let completedCount = 0;
-  await onProgress({ stepId: 'speech', status: 'running', completed: 0, total: plan.utterances.length, detail: reusable.size ? `Found ${reusable.size} saved passages` : `${action === 'Generated' ? 'Generating' : 'Regenerating'} the first passage` });
+  await onProgress({ stepId: 'speech', status: 'running', completed: 0, total: plan.utterances.length, detail: reusable.size ? 'Reusing passages already recorded' : `${action === 'Generated' ? 'Recording' : 'Recording again'} the first passage` });
 
   const processPassages = async () => {
     for (const utterance of plan.utterances) {
@@ -197,7 +197,7 @@ async function generateOrResumeChapterAudio(options: {
         stepId: 'speech',
         completed: completedCount,
         total: plan.utterances.length,
-        detail: `${reused ? 'Reused' : action} ${completedCount} of ${plan.utterances.length} passages`,
+        detail: reused ? 'Reusing a passage already recorded' : action === 'Generated' ? 'Recording the voices' : 'Recording the voices again',
         audioPreview: preview
       });
     }
@@ -237,7 +237,7 @@ export async function prepareRegistry(context: RunContext, onProgress: ProgressR
     await onProgress({
       stepId: 'registry-analysis', status: registryAlreadyAnalyzed ? 'completed' : 'running',
       completed: registryAlreadyAnalyzed ? manifest.chapters.length : 0, total: manifest.chapters.length,
-      detail: registryAlreadyAnalyzed ? 'Existing continuity registries are current' : 'Reading the first chapter'
+      detail: registryAlreadyAnalyzed ? 'The cast and the places are already up to date' : 'Reading the first chapter'
     });
     const registry = registryAlreadyAnalyzed ? { characters: manifest.characters, worldElements: manifest.worldElements } : await withLocalRuntime('text', async () => {
       let currentCharacters = manifest.characters;
@@ -248,7 +248,7 @@ export async function prepareRegistry(context: RunContext, onProgress: ProgressR
           schemaName: 'registry-patch',
           system: withAuthoringContext(`Update the story registries from textual evidence. Extract characters conservatively and deduplicate against the supplied registry. For every character, set voiceGender to female, male, or neutral only when supported by the text; otherwise use unknown. voiceDescription is a casting direction derived from age, personality, and narrative role, not a canonical physical fact. Never invent physical traits. Also extract only visually identity-defining recurring locations or objects whose consistency would materially matter across scenes. Ignore ordinary rooms, generic furniture, incidental props, and one-off scenery. Mark a truly central anchor essential and every other retained anchor useful; never retain a world element with referencePriority none. Keep at most eight world elements for the entire book.`, authoringContext),
           prompt: `CHAPTER_ID: ${chapter.id}\nCURRENT_CHARACTERS:\n${JSON.stringify(currentCharacters)}\nCURRENT_WORLD_ELEMENTS:\n${JSON.stringify(currentWorldElements)}\n${authoringContextBlock(authoringContext)}CHAPTER_TEXT:\n${chapter.text}`,
-          onStatus: (detail) => onProgress({ stepId: 'registry-analysis', detail: `${chapter.title} · ${detail}` })
+          onStatus: (status) => onProgress({ stepId: 'registry-analysis', detail: `${chapter.title} · ${status.detail}`, progress: status.progress })
         });
         currentCharacters = mergeCharacters(currentCharacters, patch.characters.map((character) => ({ ...character, id: safePart(character.id || character.canonicalName) })));
         currentWorldElements = mergeWorldElements(currentWorldElements, patch.worldElements.map((element) => ({ ...element, id: safePart(element.id || element.canonicalName) })));
@@ -257,7 +257,8 @@ export async function prepareRegistry(context: RunContext, onProgress: ProgressR
         // Persisted after every chapter so an interrupted pass resumes from the
         // identities it already established instead of re-reading the whole book.
         await saveBookRegistry(bookId, { characters: currentCharacters, worldElements: currentWorldElements });
-        await onProgress({ stepId: 'registry-analysis', completed: index + 1, total: manifest.chapters.length, detail: `Read ${index + 1} of ${manifest.chapters.length} chapters` });
+        // No detail here on purpose: the count and its bar already say how far this got.
+        await onProgress({ stepId: 'registry-analysis', completed: index + 1, total: manifest.chapters.length });
       }
       return { characters: currentCharacters, worldElements: currentWorldElements };
     });
@@ -265,7 +266,7 @@ export async function prepareRegistry(context: RunContext, onProgress: ProgressR
     const missingCharacterReferences = registry.characters.filter((character) => !character.referenceImages.some((reference) => reference.styleId === manifest.visualStyle.id));
     const missingWorldReferences = registry.worldElements.filter((element) => !element.referenceImages.some((reference) => reference.styleId === manifest.visualStyle.id));
     const missingReferences = missingCharacterReferences.length + missingWorldReferences.length;
-    await onProgress({ stepId: 'registry-references', status: missingReferences ? 'running' : 'completed', completed: 0, total: missingReferences, detail: missingReferences ? 'Generating the first continuity reference' : 'All continuity references are cached' });
+    await onProgress({ stepId: 'registry-references', status: missingReferences ? 'running' : 'completed', completed: 0, total: missingReferences, detail: missingReferences ? 'Drawing the first reference sheet' : 'Every reference sheet is already drawn' });
     if (missingReferences) await withLocalRuntime('image-generate', async () => {
       let completed = 0;
       for (const character of missingCharacterReferences) {
@@ -275,7 +276,7 @@ export async function prepareRegistry(context: RunContext, onProgress: ProgressR
         });
         character.referenceImages = [reference, ...character.referenceImages];
         completed += 1;
-        await onProgress({ stepId: 'registry-references', completed, total: missingReferences, detail: `Generated ${completed} of ${missingReferences} continuity references` });
+        await onProgress({ stepId: 'registry-references', completed, total: missingReferences });
       }
       for (const element of missingWorldReferences) {
         const reference = await service.image.generate({
@@ -284,7 +285,7 @@ export async function prepareRegistry(context: RunContext, onProgress: ProgressR
         });
         element.referenceImages = [reference, ...element.referenceImages];
         completed += 1;
-        await onProgress({ stepId: 'registry-references', completed, total: missingReferences, detail: `Generated ${completed} of ${missingReferences} continuity references` });
+        await onProgress({ stepId: 'registry-references', completed, total: missingReferences });
       }
     });
     await onProgress({ stepId: 'registry-references', status: 'completed', completed: missingReferences, total: missingReferences });
@@ -315,7 +316,7 @@ export async function regenerateCharacterReference(context: RunContext, characte
   if (!character) throw new Error('Character not found');
   const service = providers(context);
   const regenerationId = Date.now();
-  await onProgress({ stepId: 'character-reference', status: 'running', completed: 0, total: 1, detail: `Regenerating ${character.canonicalName}` });
+  await onProgress({ stepId: 'character-reference', status: 'running', completed: 0, total: 1, detail: `Drawing ${character.canonicalName} again` });
   const reference = await withLocalRuntime('image-generate', () => service.image.generate({
     bookId,
     artifactName: `${character.id}-reference-${manifest.visualStyle.id}-${regenerationId}`,
@@ -328,7 +329,7 @@ export async function regenerateCharacterReference(context: RunContext, characte
   }));
   character.referenceImages = [reference, ...character.referenceImages];
   await saveBookRegistry(bookId, { characters: manifest.characters });
-  await onProgress({ stepId: 'character-reference', status: 'completed', completed: 1, total: 1, detail: `Regenerated ${character.canonicalName}` });
+  await onProgress({ stepId: 'character-reference', status: 'completed', completed: 1, total: 1, detail: `${character.canonicalName} is ready` });
   return manifest;
 }
 
@@ -347,7 +348,7 @@ export async function prepareChapter(
   const referencesOutdated = manifest.characters.some((character) => !character.referenceImages.some((reference) => reference.styleId === manifest.visualStyle.id))
     || manifest.worldElements.some((element) => !element.referenceImages.some((reference) => reference.styleId === manifest.visualStyle.id));
   if (manifest.registryStatus !== 'ready' || referencesOutdated) {
-    await onProgress({ stepId: 'registry', status: 'running', completed: 0, total: 1, detail: 'Preparing character identities first' });
+    await onProgress({ stepId: 'registry', status: 'running', completed: 0, total: 1, detail: 'Getting to know the characters first' });
     const chapterCount = manifest.chapters.length;
     manifest = await prepareRegistry(context, async (update) => {
       const isReferences = update.stepId === 'registry-references';
@@ -356,11 +357,11 @@ export async function prepareChapter(
         status: update.status === 'failed' ? 'failed' : update.status === 'completed' && isReferences ? 'completed' : 'running',
         completed: (isReferences ? chapterCount : 0) + (update.completed ?? 0),
         total: chapterCount + (isReferences ? update.total ?? 0 : 1),
-        detail: update.detail ?? (isReferences ? 'Generating character identity sheets' : 'Reading the book for characters')
+        detail: update.detail ?? (isReferences ? 'Drawing the character sheets' : 'Reading the book for its characters')
       });
     });
   }
-  await onProgress({ stepId: 'registry', status: 'completed', completed: 1, total: 1, detail: 'Character registry ready' });
+  await onProgress({ stepId: 'registry', status: 'completed', completed: 1, total: 1, detail: 'The cast is ready' });
   const chapter = manifest.chapters.find((candidate) => candidate.id === chapterId);
   if (!chapter) throw new Error('Chapter not found');
   const visualRange = visualBeatRange(chapter.text);
@@ -396,17 +397,19 @@ export async function prepareChapter(
     status: plan ? 'completed' : 'running',
     completed: plan ? 1 : 0,
     total: 1,
-    detail: plan ? 'Resuming the validated chapter plan' : 'Splitting the chapter into spoken passages and visual beats',
+    detail: plan ? 'Picking up the direction already approved' : 'Deciding who speaks, how, and what we see',
     chapterPlan: plan
   });
   let rejectedPlan: z.infer<typeof ChapterPlanSchema> | undefined;
   let planError = '';
   if (!plan) await withLocalRuntime('text', async () => {
     for (let planAttempt = 1; planAttempt <= 3; planAttempt += 1) {
-      // The rewrite counter only means something once a plan has actually been rejected,
-      // so the first pass says what it is doing instead of counting attempts.
-      const rewriteLabel = planAttempt === 1 ? '' : `Plan rewrite ${planAttempt - 1} of 2`;
-      if (rewriteLabel) await onProgress({ stepId: 'plan', status: 'running', detail: `${rewriteLabel} · previous plan rejected: ${shorten(planError)}` });
+      // The take counter only means something once a plan has actually been rejected, so
+      // the first pass says what it is doing instead of counting attempts. Why the previous
+      // take was rejected is a validation detail: it belongs in the job error, not on a
+      // line the reader is watching while they wait.
+      const rewriteLabel = planAttempt === 1 ? '' : `Take ${planAttempt} of 3`;
+      if (rewriteLabel) await onProgress({ stepId: 'plan', status: 'running', detail: `${rewriteLabel} · reworking the direction` });
       const correction = rejectedPlan
         ? `\n\nPREVIOUS_PLAN_REJECTED:\n${JSON.stringify(rejectedPlan)}\n\nVALIDATION_ERROR:\n${planError}\nReturn a complete corrected plan. Do not patch only one utterance.`
         : '';
@@ -417,7 +420,7 @@ export async function prepareChapter(
         providerAttempts: 2,
         system: withAuthoringContext(`Create an audiobook performance plan from the complete chapter. Preserve every original word exactly once across ordered utterances: no omissions, additions, summaries, overlaps, or reordered passages. Attribute dialogue only when certain. Keep a spoken line and the attribution belonging to its sentence in the same utterance attributed to the speaker; the pipeline separates the quoted or dash-marked speech from the attribution deterministically. Never attribute an utterance that contains no spoken line to a character unless it continues that character's speech. Keep adjacent narration by the same speaker in coherent passages, normally 40-220 characters; avoid tiny fragments under 20 characters unless the source contains a genuinely standalone brief line of dialogue. Choose ${visualRange.minimum}-${visualRange.maximum} visually distinct, meaningful visual beats distributed across the whole chapter, including at least one in its opening third and one in its final third. Use stable character and world-element IDs from the registries. Attach a world element only when it is actually visible and continuity-relevant in that scene. Visual prompts describe content and composition, not a competing medium or art style. Do not request realism or photography. Do not include sound effects unless narratively useful.`, authoringContext),
         prompt: `CHAPTER_ID: ${chapter.id}\nCHAPTER_TITLE: ${chapter.title}\n${authoringContextBlock(authoringContext)}CHAPTER_TEXT:\n${chapter.text}\n\nCHARACTER_REGISTRY:\n${JSON.stringify(manifest.characters)}\n\nWORLD_REGISTRY:\n${JSON.stringify(manifest.worldElements)}${correction}`,
-        onStatus: (detail) => onProgress({ stepId: 'plan', status: 'running', detail: rewriteLabel ? `${rewriteLabel} · ${detail}` : detail })
+        onStatus: (status) => onProgress({ stepId: 'plan', status: 'running', detail: rewriteLabel ? `${rewriteLabel} · ${status.detail}` : status.detail, progress: status.progress })
       });
       try {
         plan = validateVisualBeatCoverage(validateChapterPlan(
@@ -437,7 +440,7 @@ export async function prepareChapter(
   });
   const finalPlan = plan;
   if (!finalPlan) throw new Error('Chapter planner did not produce a validated plan');
-  await onProgress({ stepId: 'plan', status: 'completed', completed: 1, total: 1, detail: `${finalPlan.utterances.length} passages and ${finalPlan.visuals.length} visual beats planned`, chapterPlan: finalPlan });
+  await onProgress({ stepId: 'plan', status: 'completed', completed: 1, total: 1, detail: `${finalPlan.utterances.length} passages and ${finalPlan.visuals.length} scenes planned`, chapterPlan: finalPlan });
 
   const audioUtterances = await generateOrResumeChapterAudio({
     context,
@@ -454,14 +457,14 @@ export async function prepareChapter(
 
   const renderedUtterances: RenderedChapter['utterances'] = [];
   let timelineMs = 0;
-  await onProgress({ stepId: 'alignment', status: 'running', completed: 0, total: audioUtterances.length, detail: 'Synchronizing the first passage' });
+  await onProgress({ stepId: 'alignment', status: 'running', completed: 0, total: audioUtterances.length, detail: 'Matching the words to the audio' });
   await withLocalRuntime('alignment', async () => {
     for (const [index, item] of audioUtterances.entries()) {
       const alignment = await service.aligner.align(item.audio, item.utterance.text, item.durationMs);
       const renderedUtterance = { utterance: item.utterance, audio: item.audio, voice: { ...item.voice, voiceId: item.audio.voiceId ?? item.voice.voiceId, provider: item.audio.provider, model: item.audio.model }, startMs: timelineMs, durationMs: item.durationMs, words: alignment.words, alignment: alignment.quality };
       renderedUtterances.push(renderedUtterance);
       timelineMs += item.durationMs + item.utterance.direction.pauseAfterMs;
-      await onProgress({ stepId: 'alignment', completed: index + 1, total: audioUtterances.length, detail: `Synchronized ${index + 1} of ${audioUtterances.length} passages`, alignedPreview: renderedUtterance });
+      await onProgress({ stepId: 'alignment', completed: index + 1, total: audioUtterances.length, alignedPreview: renderedUtterance });
     }
   });
   await onProgress({ stepId: 'alignment', status: 'completed', completed: audioUtterances.length, total: audioUtterances.length });
@@ -473,7 +476,7 @@ export async function prepareChapter(
   }));
   const renderedVisuals: RenderedChapter['visuals'] = [];
   let completedVisuals = 0;
-  await onProgress({ stepId: 'visuals', status: 'running', completed: 0, total: visualJobs.length, detail: visualJobs.length ? 'Staging the first scene' : 'No visual beats requested' });
+  await onProgress({ stepId: 'visuals', status: 'running', completed: 0, total: visualJobs.length, detail: visualJobs.length ? 'Painting the first scene' : 'This chapter asked for no scenes' });
   const generateVisuals = async (jobs: typeof visualJobs) => {
     for (const { cue, characters, worldElements } of jobs) {
       const anchor = renderedUtterances.find((item) => item.utterance.id === cue.utteranceId) ?? renderedUtterances[0];
@@ -484,7 +487,7 @@ export async function prepareChapter(
       const renderedVisual = { cue, image, startMs: anchor?.startMs ?? 0 };
       renderedVisuals.push(renderedVisual);
       completedVisuals += 1;
-      await onProgress({ stepId: 'visuals', completed: completedVisuals, total: visualJobs.length, detail: `Generated ${completedVisuals} of ${visualJobs.length} scenes`, visualPreview: renderedVisual });
+      await onProgress({ stepId: 'visuals', completed: completedVisuals, total: visualJobs.length, visualPreview: renderedVisual });
     }
   };
   const plainVisuals = visualJobs.filter(({ characters, worldElements }) => !characters.some((character) => character.referenceImages.length) && !worldElements.some((element) => element.referenceImages.length));
@@ -546,7 +549,7 @@ export async function regenerateChapterAudio(
 
   const utterances: RenderedChapter['utterances'] = [];
   let timelineMs = 0;
-  await onProgress({ stepId: 'alignment', status: 'running', completed: 0, total: generated.length, detail: 'Realigning the first passage' });
+  await onProgress({ stepId: 'alignment', status: 'running', completed: 0, total: generated.length, detail: 'Matching the words to the new audio' });
   await withLocalRuntime('alignment', async () => {
     for (const [index, item] of generated.entries()) {
       const alignment = await service.aligner.align(item.audio, item.utterance.text, item.durationMs);
@@ -561,7 +564,7 @@ export async function regenerateChapterAudio(
       };
       utterances.push(renderedUtterance);
       timelineMs += item.durationMs + item.utterance.direction.pauseAfterMs;
-      await onProgress({ stepId: 'alignment', completed: index + 1, total: generated.length, detail: `Realigned ${index + 1} of ${generated.length} passages`, alignedPreview: renderedUtterance });
+      await onProgress({ stepId: 'alignment', completed: index + 1, total: generated.length, alignedPreview: renderedUtterance });
     }
   });
   await onProgress({ stepId: 'alignment', status: 'completed', completed: generated.length, total: generated.length });

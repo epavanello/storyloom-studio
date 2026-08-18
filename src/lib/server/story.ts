@@ -82,13 +82,13 @@ export async function generateStory(context: RunContext, onProgress: ProgressRep
         status: outline ? 'completed' : 'running',
         completed: outline ? 1 : 0,
         total: 1,
-        detail: outline ? 'Riutilizzo la struttura della storia già approvata' : 'Progetto l’arco completo della storia'
+        detail: outline ? 'Picking up the outline already approved' : 'Shaping the arc of the whole story'
       });
 
       if (!outline) {
         let lastError: unknown;
         for (let attempt = 1; attempt <= 2; attempt += 1) {
-          const retryLabel = attempt === 1 ? '' : 'Riprogetto l’arco dopo una scaletta non valida';
+          const retryLabel = attempt === 1 ? '' : 'Second take on the outline';
           if (retryLabel) await onProgress({ stepId: 'story-outline', status: 'running', detail: retryLabel });
           try {
             const candidate = await service.text.generate({
@@ -98,7 +98,7 @@ export async function generateStory(context: RunContext, onProgress: ProgressRep
               providerAttempts: 2,
               system: `Design the complete structure for an original work of fiction. The user's request is the creative source of truth. Return exactly the requested number of ordered chapters, numbered from zero. Keep one coherent narrative arc, stable character identities, explicit causal continuity, and a real ending. Write the story in the same language as the user's request unless the request explicitly asks for another language. This is an outline only; do not write chapter prose yet.`,
               prompt: `STORY_REQUEST_JSON:\n${JSON.stringify({ prompt: origin.prompt, chapterCount: origin.requestedChapterCount })}`,
-              onStatus: (detail) => onProgress({ stepId: 'story-outline', status: 'running', detail: retryLabel ? `${retryLabel} · ${detail}` : detail })
+              onStatus: (status) => onProgress({ stepId: 'story-outline', status: 'running', detail: retryLabel ? `${retryLabel} · ${status.detail}` : status.detail, progress: status.progress })
             });
             outline = validateOutline(candidate, origin.requestedChapterCount);
             break;
@@ -110,7 +110,7 @@ export async function generateStory(context: RunContext, onProgress: ProgressRep
         origin = { ...origin, outline };
         await saveGeneratedStoryState(context.userId, context.bookId, { origin, title: outline.title });
       }
-      await onProgress({ stepId: 'story-outline', status: 'completed', completed: 1, total: 1, detail: `Struttura pronta: ${outline.chapters.length} capitoli` });
+      await onProgress({ stepId: 'story-outline', status: 'completed', completed: 1, total: 1, detail: `${outline.chapters.length} chapters planned` });
 
       const chaptersByOrder = new Map(manifest.chapters.map((chapter) => [chapter.order, chapter]));
       await onProgress({
@@ -118,7 +118,7 @@ export async function generateStory(context: RunContext, onProgress: ProgressRep
         status: 'running',
         completed: chaptersByOrder.size,
         total: origin.requestedChapterCount,
-        detail: chaptersByOrder.size ? `Riprendo da ${chaptersByOrder.size} capitoli già completati` : 'Scrivo il primo capitolo completo'
+        detail: chaptersByOrder.size ? 'Carrying on from the chapters already written' : 'Writing the first chapter'
       });
 
       for (const specification of outline.chapters) {
@@ -127,7 +127,7 @@ export async function generateStory(context: RunContext, onProgress: ProgressRep
         let generated;
         let lastError: unknown;
         for (let attempt = 1; attempt <= 2; attempt += 1) {
-          const retryLabel = attempt === 1 ? '' : 'seconda bozza dopo un risultato non valido';
+          const retryLabel = attempt === 1 ? '' : 'second take';
           try {
             generated = await service.text.generate({
               schema: GeneratedStoryChapterSchema,
@@ -136,12 +136,13 @@ export async function generateStory(context: RunContext, onProgress: ProgressRep
               providerAttempts: 2,
               system: `Write one complete chapter of an original story. Produce polished narrative prose, not an outline, summary, screenplay, plan, commentary, or Markdown. Target roughly 900-1,400 words. Honor every established name, trait, relationship, event, setting, tone, and continuity constraint. Do not repeat the chapter title inside the prose. The chapter must advance the overall arc and end exactly where its outline intends.`,
               prompt: `STORY_REQUEST:\n${origin.prompt}\n\nCOMPLETE_OUTLINE_JSON:\n${JSON.stringify(outline)}\n\nCURRENT_CHAPTER_JSON:\n${JSON.stringify(specification)}\n\nPREVIOUS_CHAPTER_END:\n${previous?.text.slice(-4_000) ?? '(This is the opening chapter.)'}`,
-              onStatus: (detail) => onProgress({
+              onStatus: (status) => onProgress({
                 stepId: 'story-chapters',
                 status: 'running',
                 completed: chaptersByOrder.size,
                 total: origin.requestedChapterCount,
-                detail: retryLabel ? `${specification.title} · ${detail} · ${retryLabel}` : `${specification.title} · ${detail}`
+                detail: retryLabel ? `${specification.title} · ${status.detail} · ${retryLabel}` : `${specification.title} · ${status.detail}`,
+                progress: status.progress
               })
             });
             break;
@@ -160,11 +161,11 @@ export async function generateStory(context: RunContext, onProgress: ProgressRep
         };
         await saveGeneratedChapter(context.userId, context.bookId, chapter);
         chaptersByOrder.set(chapter.order, chapter);
+        // No detail here on purpose: the count and its bar already say how far this got.
         await onProgress({
           stepId: 'story-chapters',
           completed: chaptersByOrder.size,
-          total: origin.requestedChapterCount,
-          detail: `Capitoli pronti: ${chaptersByOrder.size} di ${origin.requestedChapterCount}`
+          total: origin.requestedChapterCount
         });
       }
 
@@ -178,7 +179,7 @@ export async function generateStory(context: RunContext, onProgress: ProgressRep
         status: 'completed',
         completed: origin.requestedChapterCount,
         total: origin.requestedChapterCount,
-        detail: 'Il manoscritto completo è pronto da leggere o arricchire'
+        detail: 'The whole manuscript is ready to read'
       });
     });
   } catch (error) {

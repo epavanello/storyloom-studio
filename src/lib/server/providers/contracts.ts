@@ -9,6 +9,13 @@ export type VoiceOption = {
   description: string;
 };
 
+/**
+ * What one in-flight request reports while it runs. `detail` is a short plain sentence
+ * for the reader; `progress` is the share of the time budget already spent, which the UI
+ * draws as a creeping bar instead of printing a stopwatch on the page.
+ */
+export type ProviderStatus = { detail: string; progress?: number };
+
 export type StructuredRequest<T> = {
   system: string;
   prompt: string;
@@ -16,7 +23,7 @@ export type StructuredRequest<T> = {
   schemaName: string;
   timeoutMs?: number;
   providerAttempts?: number;
-  onStatus?: (detail: string) => Promise<void>;
+  onStatus?: (status: ProviderStatus) => Promise<void>;
 };
 
 export interface StructuredTextProvider {

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invalidateAll } from '$app/navigation';
   import { onMount } from 'svelte';
+  import { jobPercent, stepBarKind, stepPercent } from '$lib/core/progress';
   import type { GenerationJob, QueueSnapshot } from '$lib/core/schemas';
 
   let { data } = $props();
@@ -49,21 +50,16 @@
     await invalidateAll();
   }
 
+  async function resume(job: GenerationJob) {
+    message = '';
+    const response = await fetch(`/api/jobs/${job.id}/resume`, { method: 'POST' });
+    if (!response.ok) message = (await response.json()).error ?? 'Could not resume the job.';
+    await refresh();
+  }
+
   function title(job: GenerationJob) {
     const book = data.titles[job.bookId] ?? job.bookId;
     return job.kind === 'story' ? `${book} · source story` : job.kind === 'registry' ? `${book} · character registry` : `${book} · ${job.chapterId}`;
-  }
-
-  function percent(job: GenerationJob) {
-    const done = job.steps.reduce((sum, step) => {
-      if (step.status === 'completed') return sum + 1;
-      return sum + Math.min(1, step.completed / Math.max(1, step.total));
-    }, 0);
-    return Math.round(done / Math.max(1, job.steps.length) * 100);
-  }
-
-  function stepPercent(completed: number, total: number, status: string) {
-    return status === 'completed' ? 100 : Math.round(Math.min(1, completed / Math.max(1, total)) * 100);
   }
 
   function when(value: string | null) {
@@ -127,14 +123,14 @@
               · started {when(job.startedAt)}
             </span>
           </div>
-          <b>{percent(job)}%</b>
+          <b>{jobPercent(job)}%</b>
         </div>
-        <div class="job-progress"><i style={`width: ${percent(job)}%`}></i></div>
+        <div class="job-progress"><i style={`width: ${jobPercent(job)}%`}></i></div>
         <ol class="job-steps">
           {#each job.steps as step}
             <li class:done={step.status === 'completed'} class:current={step.status === 'running'} class:failed={step.status === 'failed'}>
               <i>{step.status === 'completed' ? '✓' : step.status === 'running' ? '•' : step.status === 'failed' ? '!' : '○'}</i>
-              <div><span>{step.label}</span>{#if step.detail}<small>{step.detail}</small>{/if}{#if step.total > 1}<div class="job-step-progress" role="progressbar" aria-label={`Avanzamento: ${step.label}`} aria-valuemin="0" aria-valuemax="100" aria-valuenow={stepPercent(step.completed, step.total, step.status)}><i style={`width: ${stepPercent(step.completed, step.total, step.status)}%`}></i></div>{/if}</div>
+              <div><span>{step.label}</span>{#if step.detail}<small>{step.detail}</small>{/if}{#if stepBarKind(step)}<div class="job-step-progress" class:waiting={stepBarKind(step) === 'waiting'} role="progressbar" aria-label={`Progress: ${step.label}`} aria-valuemin="0" aria-valuemax="100" aria-valuenow={stepPercent(step)}><i style={`width: ${stepPercent(step)}%`}></i></div>{/if}</div>
               {#if step.total > 1}<b>{step.completed}/{step.total}</b>{/if}
             </li>
           {/each}
@@ -158,7 +154,7 @@
             <td><span class={`status-pill ${job.status}`}>{job.status}</span>{#if job.error}<small class="job-error">{job.error}</small>{/if}</td>
             <td>{job.mode}</td>
             <td>{when(job.completedAt)}</td>
-            <td><button class="text-button" onclick={() => remove(job)}>Remove</button></td>
+            <td>{#if job.status === 'failed'}<button class="text-button" onclick={() => resume(job)}>Resume</button>{/if}<button class="text-button" onclick={() => remove(job)}>Remove</button></td>
           </tr>
         {/each}
       </tbody>

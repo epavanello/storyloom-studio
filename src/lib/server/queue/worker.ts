@@ -2,6 +2,7 @@ import { getConfig } from '../config';
 import { buildRunContext } from '../context';
 import { finalize, JobCancelledError, markJobActive, recoverInterruptedJobs, reportJobProgress } from '../jobs';
 import { prepareChapter, prepareRegistry, regenerateChapterAudio, regenerateCharacterReference } from '../orchestrator';
+import { describeGenerationFailure } from '../providers/failures';
 import { generateStory } from '../story';
 import { getStorage } from '../storage/index';
 import { getQueueDriver, type JobPayload, type RunningWorker } from './index';
@@ -40,8 +41,7 @@ async function execute(payload: JobPayload) {
       await finalize(jobId, 'cancelled', { error: 'Cancelled while running' });
       return;
     }
-    const message = error instanceof Error ? error.message : 'Generation failed';
-    await finalize(jobId, 'failed', { error: message });
+    await finalize(jobId, 'failed', { error: describeGenerationFailure(error) });
     // Rethrown so the queue records the failure too and the snapshot stays truthful.
     throw error;
   }
