@@ -138,12 +138,14 @@ Keep the pipeline conceptually close to this sequence:
 2. `extractCharacters`
    - analyze chapters incrementally with access to the current registry;
    - collect aliases, evidence, role, appearance, and first appearance;
-   - reconcile without destructive guessing.
+   - reconcile without destructive guessing;
+   - for a book written from a prompt, also receive its authoring context (original request, approved outline, declared speakers) as secondary recognition evidence only.
 3. `generateCharacterReferences`
    - generate reusable identity sheets before scene images;
    - preserve reference versions and approval status.
 4. `planChapter`
    - read the complete chapter plus relevant registries and prior continuity;
+   - receive the same authoring context as the registry step when the book was written from a prompt;
    - emit typed utterances, directions, visual cues, and optional sound cues;
    - preserve source coverage and stable character IDs.
 5. `generateNarration`
@@ -229,6 +231,7 @@ Changes may improve this sequence, but they must preserve the separation of resp
 ## Character and continuity rules
 
 - Character extraction must use textual evidence and the current registry.
+- Authoring context (the request and outline behind a generated book) helps recognise and spell identities the manuscript already contains; it never establishes one. Imported books have none and must keep the unchanged prompts.
 - Deduplication should consider canonical name, aliases, title, context, relationships, and incompatible attributes.
 - Pronouns, ordinary capitalized words, locations, adjectives, and formatting artifacts are not characters.
 - Unknown appearance details must remain unknown rather than becoming generated canon.

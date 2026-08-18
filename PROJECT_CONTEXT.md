@@ -32,6 +32,8 @@ L'utente importa un libro. Il sistema estrae testo e metadati, identifica capito
 
 In alternativa all'import, l'utente può chiedere una storia originale e indicare il numero di capitoli. Il writer testuale progetta prima l'arco completo e genera poi il testo integrale di ogni capitolo in coda. Prompt, outline e provenienza del provider restano collegati al libro; ogni capitolo completato diventa testo sorgente immutabile e un retry riparte dal primo capitolo mancante. Questo testo è leggibile subito, senza attendere Character Registry, voci, audio o immagini, e alimenta in seguito la stessa pipeline di augmentation usata per i libri importati.
 
+Per questi libri il prompt originale, l'outline approvato e gli speaker dichiarati esplicitamente nella richiesta restano disponibili come `authoringContext` durante Registry e Chapter Planning: la pipeline resta una sola e identica a quella dei libri importati, ma non deve più dedurre da zero identità e speaker che l'autore aveva già dichiarato. Resta contesto secondario: il testo definitivo del capitolo è l'unica fonte dei fatti, e nulla del prompt può introdurre personaggi, luoghi o eventi assenti dal manoscritto. Un libro importato non ha `authoringContext` e riceve esattamente i prompt di prima.
+
 La pagina non è l'unità narrativa primaria: in un EPUB cambia con dispositivo e impaginazione. Il sistema lavora quindi con capitoli e segmenti semantici, pur potendo presentare una navigazione simile alle pagine.
 
 ### Registri di continuità

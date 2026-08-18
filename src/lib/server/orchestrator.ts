@@ -3,6 +3,7 @@ import { parseBuffer } from 'music-metadata';
 import { z } from 'zod';
 import { BookManifestSchema, ChapterPlanSchema, CharacterSchema, WorldElementSchema, type BookManifest, type ChapterPlan, type Character, type GenerationAudioPreview, type RenderedChapter, type WorldElement } from '../core/schemas';
 import { locateChapterPlanText, splitAttributedNarration, validateChapterPlan, validateVisualBeatCoverage, visualBeatRange } from '../core/plan';
+import { authoringContextBlock, authoringContextFor, withAuthoringContext } from '../core/authoring';
 import { parseBook } from './ingest';
 import { describeMissingCredentials, type RunContext } from './context';
 import { createBook, getManifest, getRenderedChapter, readArtifact, saveBookRegistry, saveRenderedChapter, safePart } from './store';
@@ -226,6 +227,9 @@ export async function prepareRegistry(context: RunContext, onProgress: ProgressR
   const { bookId } = context;
   const manifest = await getManifest(context.userId, bookId);
   const registryAlreadyAnalyzed = manifest.registryStatus === 'ready' && (manifest.characters.length > 0 || manifest.worldElements.length > 0);
+  // Books written from a prompt keep their authoring request and outline as secondary
+  // recognition context; imported books have none and run the pipeline unchanged.
+  const authoringContext = authoringContextFor(manifest);
   manifest.registryStatus = 'processing';
   await saveBookRegistry(bookId, { registryStatus: 'processing' });
   const service = providers(context);
@@ -242,8 +246,8 @@ export async function prepareRegistry(context: RunContext, onProgress: ProgressR
         const patch = await service.text.generate({
           schema: RegistryPatchSchema,
           schemaName: 'registry-patch',
-          system: `Update the story registries from textual evidence. Extract characters conservatively and deduplicate against the supplied registry. For every character, set voiceGender to female, male, or neutral only when supported by the text; otherwise use unknown. voiceDescription is a casting direction derived from age, personality, and narrative role, not a canonical physical fact. Never invent physical traits. Also extract only visually identity-defining recurring locations or objects whose consistency would materially matter across scenes. Ignore ordinary rooms, generic furniture, incidental props, and one-off scenery. Mark a truly central anchor essential and every other retained anchor useful; never retain a world element with referencePriority none. Keep at most eight world elements for the entire book.`,
-          prompt: `CHAPTER_ID: ${chapter.id}\nCURRENT_CHARACTERS:\n${JSON.stringify(currentCharacters)}\nCURRENT_WORLD_ELEMENTS:\n${JSON.stringify(currentWorldElements)}\nCHAPTER_TEXT:\n${chapter.text}`,
+          system: withAuthoringContext(`Update the story registries from textual evidence. Extract characters conservatively and deduplicate against the supplied registry. For every character, set voiceGender to female, male, or neutral only when supported by the text; otherwise use unknown. voiceDescription is a casting direction derived from age, personality, and narrative role, not a canonical physical fact. Never invent physical traits. Also extract only visually identity-defining recurring locations or objects whose consistency would materially matter across scenes. Ignore ordinary rooms, generic furniture, incidental props, and one-off scenery. Mark a truly central anchor essential and every other retained anchor useful; never retain a world element with referencePriority none. Keep at most eight world elements for the entire book.`, authoringContext),
+          prompt: `CHAPTER_ID: ${chapter.id}\nCURRENT_CHARACTERS:\n${JSON.stringify(currentCharacters)}\nCURRENT_WORLD_ELEMENTS:\n${JSON.stringify(currentWorldElements)}\n${authoringContextBlock(authoringContext)}CHAPTER_TEXT:\n${chapter.text}`,
           onStatus: (detail) => onProgress({ stepId: 'registry-analysis', detail: `${chapter.title} · ${detail}` })
         });
         currentCharacters = mergeCharacters(currentCharacters, patch.characters.map((character) => ({ ...character, id: safePart(character.id || character.canonicalName) })));
@@ -360,6 +364,7 @@ export async function prepareChapter(
   const chapter = manifest.chapters.find((candidate) => candidate.id === chapterId);
   if (!chapter) throw new Error('Chapter not found');
   const visualRange = visualBeatRange(chapter.text);
+  const authoringContext = authoringContextFor(manifest);
   const service = providers(context);
   const generationSuffix = options.generationId ? `-${safePart(options.generationId)}` : '';
   const voiceRegistryCurrent = manifest.voices.some((voice) => voice.characterId === 'narrator')
@@ -410,8 +415,8 @@ export async function prepareChapter(
         schemaName: 'chapter-plan',
         timeoutMs: 300_000,
         providerAttempts: 2,
-        system: `Create an audiobook performance plan from the complete chapter. Preserve every original word exactly once across ordered utterances: no omissions, additions, summaries, overlaps, or reordered passages. Attribute dialogue only when certain. Keep a spoken line and the attribution belonging to its sentence in the same utterance attributed to the speaker; the pipeline separates the quoted or dash-marked speech from the attribution deterministically. Never attribute an utterance that contains no spoken line to a character unless it continues that character's speech. Keep adjacent narration by the same speaker in coherent passages, normally 40-220 characters; avoid tiny fragments under 20 characters unless the source contains a genuinely standalone brief line of dialogue. Choose ${visualRange.minimum}-${visualRange.maximum} visually distinct, meaningful visual beats distributed across the whole chapter, including at least one in its opening third and one in its final third. Use stable character and world-element IDs from the registries. Attach a world element only when it is actually visible and continuity-relevant in that scene. Visual prompts describe content and composition, not a competing medium or art style. Do not request realism or photography. Do not include sound effects unless narratively useful.`,
-        prompt: `CHAPTER_ID: ${chapter.id}\nCHAPTER_TITLE: ${chapter.title}\nCHAPTER_TEXT:\n${chapter.text}\n\nCHARACTER_REGISTRY:\n${JSON.stringify(manifest.characters)}\n\nWORLD_REGISTRY:\n${JSON.stringify(manifest.worldElements)}${correction}`,
+        system: withAuthoringContext(`Create an audiobook performance plan from the complete chapter. Preserve every original word exactly once across ordered utterances: no omissions, additions, summaries, overlaps, or reordered passages. Attribute dialogue only when certain. Keep a spoken line and the attribution belonging to its sentence in the same utterance attributed to the speaker; the pipeline separates the quoted or dash-marked speech from the attribution deterministically. Never attribute an utterance that contains no spoken line to a character unless it continues that character's speech. Keep adjacent narration by the same speaker in coherent passages, normally 40-220 characters; avoid tiny fragments under 20 characters unless the source contains a genuinely standalone brief line of dialogue. Choose ${visualRange.minimum}-${visualRange.maximum} visually distinct, meaningful visual beats distributed across the whole chapter, including at least one in its opening third and one in its final third. Use stable character and world-element IDs from the registries. Attach a world element only when it is actually visible and continuity-relevant in that scene. Visual prompts describe content and composition, not a competing medium or art style. Do not request realism or photography. Do not include sound effects unless narratively useful.`, authoringContext),
+        prompt: `CHAPTER_ID: ${chapter.id}\nCHAPTER_TITLE: ${chapter.title}\n${authoringContextBlock(authoringContext)}CHAPTER_TEXT:\n${chapter.text}\n\nCHARACTER_REGISTRY:\n${JSON.stringify(manifest.characters)}\n\nWORLD_REGISTRY:\n${JSON.stringify(manifest.worldElements)}${correction}`,
         onStatus: (detail) => onProgress({ stepId: 'plan', status: 'running', detail: rewriteLabel ? `${rewriteLabel} · ${detail}` : detail })
       });
       try {
