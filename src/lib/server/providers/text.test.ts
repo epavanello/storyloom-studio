@@ -39,6 +39,24 @@ describe('OpenRouter structured output', () => {
     expect(JSON.parse(fetchMock.mock.calls[0][1].body).provider).toEqual({ sort: 'throughput', require_parameters: true });
   });
 
+  it('turns reasoning down instead of off for models that cannot disable it', async () => {
+    // A Response body can only be read once, so each call needs a fresh one.
+    const fetchMock = vi.fn().mockImplementation(async () => Response.json({ choices: [{ message: { content: '{"characters":[]}' } }] }));
+    vi.stubGlobal('fetch', fetchMock);
+    const call = {
+      schemaName: 'character-patch',
+      schema: z.object({ characters: z.array(z.string()) }),
+      system: 'Extract characters.',
+      prompt: 'Chapter text'
+    };
+
+    await new OpenRouterStructuredProvider('google/gemini-3.7-flash', 'test-key').generate(call);
+    await new OpenRouterStructuredProvider('deepseek/test', 'test-key').generate(call);
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).reasoning).toEqual({ effort: 'low' });
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).reasoning).toEqual({ enabled: false });
+  });
+
   it('reports plain progress without a stopwatch or a false completion percentage', async () => {
     const fetchMock = vi.fn().mockResolvedValue(Response.json({ choices: [{ message: { content: '{"characters":[]}' } }] }));
     vi.stubGlobal('fetch', fetchMock);

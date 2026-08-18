@@ -60,11 +60,19 @@ function startHeartbeat(onStatus: ((status: ProviderStatus) => Promise<void>) | 
   return () => clearInterval(timer);
 }
 
+/** Models whose reasoning cannot be turned off, only turned down. */
+const REASONING_ALWAYS_ON = /^google\/gemini-/;
+
 export class OpenRouterStructuredProvider implements StructuredTextProvider {
   readonly id = 'openrouter';
   private readonly routing: { sort?: string; require_parameters: true };
+  // Thinking models such as Gemini reject `reasoning: { enabled: false }` outright ("Reasoning
+  // is mandatory for this endpoint and cannot be disabled", HTTP 400). They accept a small
+  // budget instead, which is the closest thing to off that they offer.
+  private readonly reasoning: { enabled: false } | { effort: 'low' };
 
   constructor(readonly model: string, private readonly apiKey: string, providerSort: 'throughput' | 'latency' | 'price' | '' = 'throughput') {
+    this.reasoning = REASONING_ALWAYS_ON.test(model) ? { effort: 'low' } : { enabled: false };
     // `require_parameters` is not optional for this caller: every request here carries a
     // strict `json_schema`, and a provider that silently ignores it answers with prose that
     // then fails validation and burns a retry. Sorting is the tunable part; this is not.
@@ -100,7 +108,7 @@ export class OpenRouterStructuredProvider implements StructuredTextProvider {
               type: 'json_schema',
               json_schema: { name: request.schemaName, strict: true, schema: z.toJSONSchema(request.schema) }
             },
-            reasoning: { enabled: false },
+            reasoning: this.reasoning,
             temperature: attempt === 1 ? 0.2 : 0,
             max_tokens: 16_384
           })
