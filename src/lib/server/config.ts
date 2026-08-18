@@ -19,12 +19,13 @@ const RuntimeModeSchema = z.enum(['mock', 'local', 'cloud', 'hybrid']);
  * process, possibly on another machine. `off` disables job execution in this process.
  */
 const WorkerModeSchema = z.enum(['inline', 'external', 'off']);
+const OpenRouterKeyModeSchema = z.enum(['account', 'shared']);
 
 export const AppConfigSchema = z.object({
   mode: RuntimeModeSchema,
   /** Reveals provider, model and timing detail in the UI. Off for ordinary readers. */
   technicalUi: z.boolean(),
-  publicUrl: z.string(),
+  publicUrl: z.string().url(),
   /** `file:./data/storyloom.db` for one machine, `libsql://…turso.io` when distributed. */
   databaseUrl: z.string(),
   databaseAuthToken: z.string(),
@@ -57,6 +58,9 @@ export const AppConfigSchema = z.object({
     secret: z.string(),
     trustedOrigins: z.array(z.string()),
     allowSignUp: z.boolean(),
+    requireEmailVerification: z.boolean(),
+    resendApiKey: z.string(),
+    emailFrom: z.string(),
     github: z.object({ clientId: z.string(), clientSecret: z.string() }),
     google: z.object({ clientId: z.string(), clientSecret: z.string() })
   }),
@@ -64,6 +68,12 @@ export const AppConfigSchema = z.object({
   localLlmModel: z.string(),
   localLlmModelKey: z.string(),
   openRouterApiKey: z.string(),
+  /**
+   * `account` is the public SaaS posture: only the requesting account's sealed key
+   * may fund a run. `shared` is for a trusted self-host where the operator key funds
+   * every account. Keeping this explicit prevents an accidental SaaS fallback.
+   */
+  openRouterKeyMode: OpenRouterKeyModeSchema,
   openRouterLlmModel: z.string(),
   // How OpenRouter picks between the providers serving a model. Empty keeps OpenRouter's
   // default price-weighted load balancing; any sort value disables that balancing.
@@ -144,6 +154,11 @@ export function getConfig(): AppConfig {
       // Registration is closed unless a deployment opts in, so an instance that is put
       // online before its owner thinks about auth does not collect strangers' accounts.
       allowSignUp: flag(env.STORYLOOM_ALLOW_SIGNUP, false),
+      // Supplying Resend opts into the safe public-registration posture by default.
+      // An isolated self-host without mail can explicitly keep this false.
+      requireEmailVerification: flag(env.STORYLOOM_REQUIRE_EMAIL_VERIFICATION, Boolean(env.RESEND_API_KEY)),
+      resendApiKey: env.RESEND_API_KEY ?? '',
+      emailFrom: env.STORYLOOM_EMAIL_FROM ?? '',
       github: { clientId: env.GITHUB_CLIENT_ID ?? '', clientSecret: env.GITHUB_CLIENT_SECRET ?? '' },
       google: { clientId: env.GOOGLE_CLIENT_ID ?? '', clientSecret: env.GOOGLE_CLIENT_SECRET ?? '' }
     },
@@ -151,6 +166,7 @@ export function getConfig(): AppConfig {
     localLlmModel: env.LOCAL_LLM_MODEL ?? 'local-model',
     localLlmModelKey: env.LOCAL_LLM_MODEL_KEY ?? env.LOCAL_LLM_MODEL ?? 'local-model',
     openRouterApiKey: env.OPENROUTER_API_KEY ?? '',
+    openRouterKeyMode: env.OPENROUTER_KEY_MODE ?? 'shared',
     openRouterLlmModel: env.OPENROUTER_LLM_MODEL ?? 'deepseek/deepseek-v4-flash-0731',
     openRouterProviderSort: env.OPENROUTER_PROVIDER_SORT ?? 'throughput',
     localTtsEngine: env.LOCAL_TTS_ENGINE ?? 'qwen',

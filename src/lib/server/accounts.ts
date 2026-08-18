@@ -1,15 +1,22 @@
 import { and, eq } from 'drizzle-orm';
 import { getDb } from './db/client';
-import { providerCredentials } from './db/schema';
+import { account as authAccounts, providerCredentials } from './db/schema';
 import { openSecret, sealSecret } from './secrets';
 
 /** Providers a user can bring their own key for. */
 export const credentialProviders = ['openrouter'] as const;
 export type CredentialProvider = (typeof credentialProviders)[number];
 
-export async function setProviderCredential(userId: string, provider: CredentialProvider, value: string) {
+export function normalizeOpenRouterKey(value: string) {
   const trimmed = value.trim();
-  if (!trimmed) throw new Error('The key is empty');
+  if (!/^sk-or-[A-Za-z0-9_-]{16,}$/.test(trimmed)) {
+    throw new Error('Enter a valid OpenRouter API key beginning with sk-or-.');
+  }
+  return trimmed;
+}
+
+export async function setProviderCredential(userId: string, provider: CredentialProvider, value: string) {
+  const trimmed = provider === 'openrouter' ? normalizeOpenRouterKey(value) : value.trim();
   const sealed = sealSecret(trimmed);
   const db = getDb();
   await db
@@ -46,4 +53,14 @@ export async function listCredentialHints(userId: string) {
     .from(providerCredentials)
     .where(eq(providerCredentials.userId, userId));
   return rows.map((row) => ({ provider: row.provider, hint: row.hint, updatedAt: row.updatedAt.toISOString() }));
+}
+
+export async function hasPasswordCredential(userId: string) {
+  const db = getDb();
+  const [row] = await db
+    .select({ id: authAccounts.id })
+    .from(authAccounts)
+    .where(and(eq(authAccounts.userId, userId), eq(authAccounts.providerId, 'credential')))
+    .limit(1);
+  return Boolean(row);
 }

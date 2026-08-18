@@ -10,14 +10,34 @@ import { createStoryDraft } from '$lib/server/story';
 import { listBooks, listTrashedBooks, purgeBook, restoreBook, trashBook } from '$lib/server/store';
 
 export const load: PageServerLoad = async ({ locals }) => {
-  const user = requireUser(locals);
-  const [books, trashed] = await Promise.all([listBooks(user.id), listTrashedBooks(user.id)]);
   const config = getConfig();
   const cloudPossible = config.mode === 'cloud'
     || config.mode === 'hybrid' && config.policies.text !== 'local-required';
+  if (!locals.user) {
+    return {
+      books: [],
+      trashed: [],
+      marketing: {
+        publicUrl: config.publicUrl,
+        allowSignUp: config.auth.allowSignUp,
+        byok: config.openRouterKeyMode === 'account'
+      },
+      storyGeneration: {
+        mode: config.mode,
+        cloudPossible,
+        provider: cloudPossible ? `OpenRouter · ${config.openRouterLlmModel}` : config.mode === 'mock' ? 'deterministic demo writer' : `local · ${config.localLlmModel}`
+      }
+    };
+  }
+  const [books, trashed] = await Promise.all([listBooks(locals.user.id), listTrashedBooks(locals.user.id)]);
   return {
     books,
     trashed,
+    marketing: {
+      publicUrl: config.publicUrl,
+      allowSignUp: config.auth.allowSignUp,
+      byok: config.openRouterKeyMode === 'account'
+    },
     storyGeneration: {
       mode: config.mode,
       cloudPossible,

@@ -3,6 +3,7 @@ import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { getConfig } from './config';
 import { getDb } from './db/client';
 import { schema } from './db/schema';
+import { sendAuthEmail } from './email';
 
 const stateKey = Symbol.for('storyloom.auth');
 const globalState = globalThis as typeof globalThis & { [stateKey]?: { signature: string; auth: ReturnType<typeof create> } };
@@ -16,6 +17,10 @@ function create() {
   // Closing registration has to cover OAuth too: without this a social login would still
   // create an account for any stranger who happens to have a GitHub or Google account.
   const disableSignUp = !config.auth.allowSignUp;
+  const mailEnabled = Boolean(config.auth.resendApiKey && config.auth.emailFrom);
+  if (config.auth.requireEmailVerification && !mailEnabled) {
+    throw new Error('Email verification is required, but Resend is not configured. Set RESEND_API_KEY and STORYLOOM_EMAIL_FROM.');
+  }
 
   const social: Record<string, { clientId: string; clientSecret: string; disableSignUp: boolean }> = {};
   // A provider is only advertised when it is actually configured, so a deployment never
@@ -32,8 +37,26 @@ function create() {
     emailAndPassword: {
       enabled: true,
       disableSignUp,
-      minPasswordLength: 10
+      minPasswordLength: 10,
+      requireEmailVerification: config.auth.requireEmailVerification,
+      revokeSessionsOnPasswordReset: true,
+      ...(mailEnabled ? {
+        sendResetPassword: async ({ user, url }: { user: { email: string; name: string }; url: string }) => {
+          await sendAuthEmail('password-reset', { to: user.email, name: user.name, url });
+        }
+      } : {})
     },
+    ...(mailEnabled ? {
+      emailVerification: {
+        sendOnSignUp: config.auth.requireEmailVerification,
+        sendOnSignIn: config.auth.requireEmailVerification,
+        autoSignInAfterVerification: true,
+        expiresIn: 60 * 60,
+        sendVerificationEmail: async ({ user, url }: { user: { email: string; name: string }; url: string }) => {
+          await sendAuthEmail('verification', { to: user.email, name: user.name, url });
+        }
+      }
+    } : {}),
     socialProviders: social,
     session: {
       expiresIn: 60 * 60 * 24 * 30,

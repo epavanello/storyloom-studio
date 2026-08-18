@@ -12,9 +12,19 @@
     event.preventDefault();
     busy = true;
     message = '';
-    const result = await signIn.email({ email, password });
+    const result = await signIn.email({
+      email,
+      password,
+      ...(data.requireEmailVerification
+        ? { callbackURL: `/auth/verified?next=${encodeURIComponent(data.next)}` }
+        : {})
+    });
     busy = false;
     if (result.error) {
+      if (result.error.code === 'EMAIL_NOT_VERIFIED') {
+        await goto(`/auth/check-email?email=${encodeURIComponent(email)}&next=${encodeURIComponent(data.next)}&sent=1`);
+        return;
+      }
       message = result.error.message ?? 'Those credentials were not accepted.';
       return;
     }
@@ -43,6 +53,7 @@
     <form onsubmit={submit}>
       <label>Email<input type="email" bind:value={email} autocomplete="email" required /></label>
       <label>Password<input type="password" bind:value={password} autocomplete="current-password" required /></label>
+      {#if data.mailEnabled}<a class="auth-inline-link" href="/auth/forgot-password">Forgot your password?</a>{/if}
       {#if message}<p class="form-error">{message}</p>{/if}
       <button class="primary-button" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}<span>→</span></button>
     </form>

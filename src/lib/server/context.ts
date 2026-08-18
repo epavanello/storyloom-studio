@@ -15,11 +15,25 @@ export type RunContext = {
   credentials: { openRouterApiKey: string };
 };
 
+export function selectOpenRouterKey(
+  mode: AppConfig['openRouterKeyMode'],
+  accountKey: string | null,
+  sharedKey: string
+) {
+  return mode === 'account' ? (accountKey ?? '') : sharedKey;
+}
+
 export async function buildRunContext(userId: string, bookId: string, jobId: string | null = null): Promise<RunContext> {
   const config = getConfig();
-  // A user's own key wins. The environment key is the self-hosted single-tenant case,
-  // where the operator and the user are the same person.
-  const openRouterApiKey = (await getProviderCredential(userId, 'openrouter')) ?? config.openRouterApiKey;
+  // Public deployments must never fall back to an operator key: a configuration error
+  // must fail closed instead of silently charging the service owner. Conversely, a
+  // shared self-host deliberately uses one environment key for every local account.
+  // Shared mode does not even read or decrypt an account credential. This keeps the
+  // operator-funded path independent from any stale personal key rows.
+  const accountKey = config.openRouterKeyMode === 'account'
+    ? await getProviderCredential(userId, 'openrouter')
+    : null;
+  const openRouterApiKey = selectOpenRouterKey(config.openRouterKeyMode, accountKey, config.openRouterApiKey);
   return {
     userId,
     bookId,

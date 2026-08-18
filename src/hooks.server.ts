@@ -12,10 +12,12 @@ const { getConfig } = await import('$lib/server/config');
 const { getAuth } = await import('$lib/server/auth');
 
 /** Paths reachable without a session. Everything else is per-user data. */
+const PUBLIC_PATHS = new Set(['/', '/robots.txt', '/sitemap.xml', '/llms.txt', '/llm.txt', '/site.webmanifest', '/og.png']);
 const PUBLIC_PREFIXES = ['/auth', '/api/auth'];
 
 function isPublic(pathname: string) {
-  return PUBLIC_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
+  return PUBLIC_PATHS.has(pathname)
+    || PUBLIC_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
 }
 
 startInlineWorker();
@@ -59,7 +61,7 @@ export const handle: Handle = async ({ event, resolve }) => {
     .api.getSession({ headers: event.request.headers })
     .catch(() => null);
 
-  event.locals.user = session?.user ? { id: session.user.id, name: session.user.name, email: session.user.email, image: session.user.image ?? null } : null;
+  event.locals.user = session?.user ? { id: session.user.id, name: session.user.name, email: session.user.email, emailVerified: session.user.emailVerified, image: session.user.image ?? null } : null;
   event.locals.session = session?.session ? { id: session.session.id, expiresAt: new Date(session.session.expiresAt).toISOString() } : null;
 
   if (!event.locals.user && !isPublic(event.url.pathname)) {

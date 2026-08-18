@@ -186,7 +186,7 @@ Ne discendono quattro elementi strutturali:
 - **Un database SQLite via libSQL** come stato condiviso fra web tier e worker: un file locale quando tutto gira su una macchina, Turso quando web e calcolo stanno su macchine diverse. Nulla lo interroga a intervalli: il progresso vivo dei job sta in Redis e il database vede solo le transizioni durevoli.
 - **Una coda sola**, dietro un driver: in-process quando tutto gira su una macchina, Redis con BullMQ quando il worker sta altrove. Il self-host non richiede quindi nessun servizio esterno; una configurazione impossibile, come coda in-process con worker staccato, viene rifiutata all'avvio. Un deploy è cloud **oppure** locale, mai entrambi: `STORYLOOM_MODE` lo decide e ogni job di quel deploy gira così. Ciò che è parametrico è quale processo drena la coda — dentro il processo web, un processo separato sulla stessa macchina, o un processo su un'altra macchina.
 - **Object storage S3-compatibile** per audio, immagini e schede identità, con lettura autorizzata contro la proprietà del libro.
-- **Sessioni e segregazione per utente**, con chiavi provider portate dall'utente e cifrate a riposo.
+- **Sessioni e segregazione per utente**, con due modalità di credenziale OpenRouter esplicite e non sovrapponibili: `account` richiede la chiave cifrata del singolo utente e non può ricadere su quella dell'operatore; `shared` usa soltanto la chiave d'ambiente del self-host.
 
 ### Cosa resta fuori
 
@@ -234,6 +234,8 @@ Il repository contiene una verticale dimostrativa SvelteKit con:
 - persistenza su SQLite/libSQL e artifact su object storage, entrambi dietro un driver (file locale o servizio gestito);
 - coda BullMQ su Redis, con worker avviabile dentro il processo web o come processo separato;
 - account, sessioni e segregazione dei dati per utente;
+- email transazionali Resend per verifica obbligatoria nel SaaS, reinvio, recupero account, reset con revoca delle sessioni e cambio password autenticato;
+- modalità OpenRouter `account` per il SaaS BYOK e `shared` per il self-host, senza fallback implicito fra le due;
 - player con utterance sequenziali e cambi scena;
 - viewer incrementale che mostra piano, tracce audio, allineamenti e scene mentre arrivano;
 - checkpoint durevoli per riusare i passaggi vocali compatibili dopo un riavvio e posizione d'ascolto per account/capitolo;

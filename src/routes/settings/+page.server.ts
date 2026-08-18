@@ -1,6 +1,6 @@
 import { fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
-import { deleteProviderCredential, listCredentialHints, setProviderCredential } from '$lib/server/accounts';
+import { deleteProviderCredential, hasPasswordCredential, listCredentialHints, setProviderCredential } from '$lib/server/accounts';
 import { getConfig } from '$lib/server/config';
 import { queueHealth } from '$lib/server/jobs';
 import { getQueueDriver } from '$lib/server/queue/index';
@@ -9,19 +9,28 @@ import { requireUser } from '$lib/server/session';
 export const load: PageServerLoad = async ({ locals }) => {
   const user = requireUser(locals);
   const config = getConfig();
-  const [credentials, queue] = await Promise.all([
+  const [credentials, queue, hasPassword] = await Promise.all([
     listCredentialHints(user.id),
-    queueHealth().catch(() => null)
+    queueHealth().catch(() => null),
+    hasPasswordCredential(user.id)
   ]);
   return {
     credentials,
     queue,
+    account: {
+      name: user.name,
+      email: user.email,
+      emailVerified: user.emailVerified,
+      hasPassword
+    },
     deployment: {
       mode: config.mode,
       storage: config.storage.driver,
       workerMode: config.worker.mode,
       queueDriver: getQueueDriver().kind,
       hasPlatformKey: Boolean(config.openRouterApiKey),
+      keyMode: config.openRouterKeyMode,
+      mailEnabled: Boolean(config.auth.resendApiKey && config.auth.emailFrom),
       /** Whether a cloud key is used at all on this deployment. */
       usesCloud: Object.values(config.policies).some((policy) => policy !== 'local-required') && config.mode !== 'mock' && config.mode !== 'local'
     }
@@ -31,6 +40,9 @@ export const load: PageServerLoad = async ({ locals }) => {
 export const actions: Actions = {
   saveKey: async ({ locals, request }) => {
     const user = requireUser(locals);
+    if (getConfig().openRouterKeyMode !== 'account') {
+      return fail(403, { message: 'This self-host uses the operator\'s shared OpenRouter key.' });
+    }
     const value = String((await request.formData()).get('openrouter') ?? '').trim();
     if (!value) return fail(400, { message: 'Paste an OpenRouter key first.' });
     try {

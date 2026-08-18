@@ -17,10 +17,20 @@
     }
     busy = true;
     message = '';
-    const result = await signUp.email({ name: name || email.split('@')[0], email, password });
+    const verificationCallback = `/auth/verified?next=${encodeURIComponent(data.next)}`;
+    const result = await signUp.email({
+      name: name || email.split('@')[0],
+      email,
+      password,
+      ...(data.requireEmailVerification ? { callbackURL: verificationCallback } : {})
+    });
     busy = false;
     if (result.error) {
       message = result.error.message ?? 'The account could not be created.';
+      return;
+    }
+    if (data.requireEmailVerification) {
+      await goto(`/auth/check-email?email=${encodeURIComponent(email)}&next=${encodeURIComponent(data.next)}`);
       return;
     }
     await goto(data.next, { invalidateAll: true });
@@ -33,7 +43,7 @@
   <div class="auth-card">
     <a class="brand" href="/" aria-label="Storyloom home"><span class="brand-mark">S</span><span>Storyloom</span></a>
     <h1>Create your studio</h1>
-    <p class="auth-lede">Your books, characters and renders stay private to your account.</p>
+    <p class="auth-lede">Your books, characters and renders stay private to your account.{data.requireEmailVerification ? ' We’ll verify your email before opening the studio.' : ''}</p>
 
     {#if data.allowSignUp}
       <form onsubmit={submit}>
