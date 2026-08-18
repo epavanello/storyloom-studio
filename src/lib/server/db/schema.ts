@@ -102,6 +102,8 @@ export const books = sqliteTable('books', {
   worldElements: text('world_elements', { mode: 'json' }).$type<WorldElement[]>().notNull().$defaultFn(() => []),
   voices: text('voices', { mode: 'json' }).$type<VoiceProfile[]>().notNull().$defaultFn(() => []),
   visualStyle: text('visual_style', { mode: 'json' }).$type<BookManifest['visualStyle']>(),
+  /** The wordless key image for the book, drawn by the registry pass. */
+  coverImage: text('cover_image', { mode: 'json' }).$type<BookManifest['coverImage']>(),
   /** Set when the owner moves the book to the trash. Recoverable until purged. */
   trashedAt: integer('trashed_at', { mode: 'timestamp_ms' }),
   createdAt: createdAt(),
@@ -129,7 +131,7 @@ export const renderedChapters = sqliteTable('rendered_chapters', {
 }, (table) => [primaryKey({ columns: [table.bookId, table.chapterId] })]);
 
 export const jobStatuses = ['queued', 'active', 'completed', 'failed', 'cancelled'] as const;
-export const jobKinds = ['story', 'registry', 'chapter', 'chapter-audio', 'character-reference'] as const;
+export const jobKinds = ['story', 'registry', 'chapter', 'chapter-audio', 'character-reference', 'book-cover'] as const;
 
 /**
  * The durable record of a job. Live per-step progress lives in Redis instead, so a

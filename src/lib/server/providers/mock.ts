@@ -3,7 +3,7 @@ import type { ArtifactRef, ChapterPlan, Character } from '../../core/schemas';
 import { ChapterPlanSchema } from '../../core/schemas';
 import { saveArtifact, safePart } from '../store';
 import { visualBeatRange } from '../../core/plan';
-import type { AlignmentProvider, ImageProvider, ImageRequest, SpeechProvider, SpeechRequest, StructuredRequest, StructuredTextProvider } from './contracts';
+import { imageDirectory, type AlignmentProvider, type ImageProvider, type ImageRequest, type SpeechProvider, type SpeechRequest, type StructuredRequest, type StructuredTextProvider } from './contracts';
 
 function hash(input: string) {
   let result = 2166136261;
@@ -54,6 +54,14 @@ export class MockStructuredProvider implements StructuredTextProvider {
         voiceGender: 'unknown', voiceDescription: 'Neutral demo delivery',
         firstAppearanceChapterId: chapterId, referenceImages: []
       })), worldElements: [] });
+    }
+    if (request.schemaName === 'cover-concept') {
+      const title = request.prompt.match(/BOOK_TITLE:\s*([^\n]+)/)?.[1] ?? 'the story';
+      return request.schema.parse({
+        concept: `A single symbolic object at the heart of “${title}”, isolated against open space`,
+        composition: 'Centred subject, generous negative space above it, low horizon',
+        palette: 'Cold blues and bone white with one warm amber accent'
+      });
     }
     if (request.schemaName === 'chapter-plan') {
       const chapterId = request.prompt.match(/CHAPTER_ID:\s*([^\n]+)/)?.[1] ?? 'chapter-1';
@@ -208,11 +216,16 @@ export class MockImageProvider implements ImageProvider {
 
   async generate(request: ImageRequest) {
     const hue = hash(request.prompt) % 360;
+    // A cover carries no lettering even in the demo provider, because that is the one
+    // property of a cover the pipeline promises.
+    if (request.kind === 'cover') {
+      const cover = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="1200" viewBox="0 0 800 1200"><defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop stop-color="hsl(${hue} 58% 30%)"/><stop offset="1" stop-color="hsl(${(hue + 40) % 360} 70% 7%)"/></linearGradient><filter id="n"><feTurbulence baseFrequency=".7" numOctaves="3" stitchTiles="stitch"/><feColorMatrix values="1 0 0 0 0 0 1 0 0 0 0 0 1 0 0 0 0 0 .07 0"/></filter></defs><rect width="800" height="1200" fill="url(#g)"/><rect width="800" height="1200" filter="url(#n)" opacity=".4"/><circle cx="400" cy="430" r="210" fill="hsl(${(hue + 30) % 360} 80% 70% / .22)"/><path d="M120 1200c60-330 150-500 280-500s220 170 280 500z" fill="hsl(${hue} 30% 96% / .16)"/></svg>`;
+      return saveArtifact(request.bookId, `${imageDirectory(request.kind)}/${safePart(request.artifactName)}.svg`, cover, { mimeType: 'image/svg+xml', provider: this.id, model: this.model, styleId: request.styleId });
+    }
     const title = request.kind === 'character-reference' ? request.characters[0]?.canonicalName ?? 'Character' : 'Generated scene preview';
     const subtitle = request.kind === 'character-reference' ? 'Character reference · locked identity' : request.characters.map((character) => character.canonicalName).join(' · ') || 'Story beat';
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="750" viewBox="0 0 1200 750"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="hsl(${hue} 55% 24%)"/><stop offset="1" stop-color="hsl(${(hue + 70) % 360} 64% 8%)"/></linearGradient><filter id="n"><feTurbulence baseFrequency=".8" numOctaves="3" stitchTiles="stitch"/><feColorMatrix values="1 0 0 0 0 0 1 0 0 0 0 0 1 0 0 0 0 0 .08 0"/></filter></defs><rect width="1200" height="750" fill="url(#g)"/><rect width="1200" height="750" filter="url(#n)" opacity=".35"/><circle cx="910" cy="285" r="175" fill="hsl(${(hue + 22) % 360} 75% 68% / .2)"/><path d="M760 670c32-185 94-280 177-280 86 0 155 96 185 280" fill="hsl(${hue} 25% 96% / .15)"/><text x="76" y="535" fill="#fff" font-family="Georgia,serif" font-size="54" font-weight="600">${xml(title)}</text><text x="80" y="590" fill="#fff" opacity=".65" font-family="Arial,sans-serif" font-size="20" letter-spacing="2">${xml(subtitle.toUpperCase())}</text></svg>`;
-    const directory = request.kind === 'scene' ? 'scenes' : request.kind === 'world-reference' ? 'world' : 'characters';
-    return saveArtifact(request.bookId, `${directory}/${safePart(request.artifactName)}.svg`, svg, { mimeType: 'image/svg+xml', provider: this.id, model: this.model, styleId: request.styleId });
+    return saveArtifact(request.bookId, `${imageDirectory(request.kind)}/${safePart(request.artifactName)}.svg`, svg, { mimeType: 'image/svg+xml', provider: this.id, model: this.model, styleId: request.styleId });
   }
 }
 

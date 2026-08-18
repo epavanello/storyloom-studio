@@ -13,7 +13,8 @@ export type JobRequest =
   | { kind: 'registry'; bookId: string }
   | { kind: 'chapter'; bookId: string; chapterId: string; force?: boolean }
   | { kind: 'chapter-audio'; bookId: string; chapterId: string }
-  | { kind: 'character-reference'; bookId: string; characterId: string };
+  | { kind: 'character-reference'; bookId: string; characterId: string }
+  | { kind: 'book-cover'; bookId: string };
 
 /** Raised when a cancel request is observed between steps. */
 export class JobCancelledError extends Error {
@@ -36,9 +37,10 @@ function step(id: string, label: string): GenerationJobStep {
 export function stepsFor(kind: JobKind): GenerationJobStep[] {
   if (kind === 'story') return [step('story-outline', 'Plan the story'), step('story-chapters', 'Write the chapters')];
   if (kind === 'character-reference') return [step('character-reference', 'Draw this character again')];
+  if (kind === 'book-cover') return [step('registry-cover', 'Paint the cover')];
   if (kind === 'chapter-audio') return [step('speech', 'Record the voices'), step('alignment', 'Match the words to the audio')];
   return kind === 'registry'
-    ? [step('registry-analysis', 'Read the book'), step('registry-references', 'Draw the cast and the places')]
+    ? [step('registry-analysis', 'Read the book'), step('registry-references', 'Draw the cast and the places'), step('registry-cover', 'Paint the cover')]
     : [
         step('registry', 'Get the cast ready'),
         step('plan', 'Direct the chapter'),

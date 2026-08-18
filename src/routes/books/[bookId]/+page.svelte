@@ -39,7 +39,8 @@
   const chapterJobActive = $derived(activeJobs.some((job) => (job.kind === 'chapter' || job.kind === 'chapter-audio') && job.chapterId === data.chapterId));
   const audioJobActive = $derived(activeJobs.some((job) => job.kind === 'chapter-audio' && job.chapterId === data.chapterId));
   const registryJobActive = $derived(activeJobs.some((job) => job.kind === 'registry'));
-  const latestRelevantJob = $derived(jobs.find((job) => job.kind === 'story' || ((job.kind === 'chapter' || job.kind === 'chapter-audio') && job.chapterId === data.chapterId) || job.kind === 'registry' || job.kind === 'character-reference'));
+  const coverJobActive = $derived(activeJobs.some((job) => job.kind === 'book-cover'));
+  const latestRelevantJob = $derived(jobs.find((job) => job.kind === 'story' || ((job.kind === 'chapter' || job.kind === 'chapter-audio') && job.chapterId === data.chapterId) || job.kind === 'registry' || job.kind === 'character-reference' || job.kind === 'book-cover'));
   const failedJob = $derived(latestRelevantJob?.status === 'failed' ? latestRelevantJob : undefined);
   const previewJob = $derived(activeJobs.find((job) =>
     (job.kind === 'chapter' || job.kind === 'chapter-audio')
@@ -177,6 +178,12 @@
 
   async function prepareRegistry() {
     await request(`/api/books/${data.book.id}/registry`);
+  }
+
+  /** Draws only the cover, for a book prepared before covers were part of the pipeline. */
+  async function paintCover() {
+    if (data.book.coverImage && !confirm('Draw a new cover for this book? The current one stays on disk but is no longer shown.')) return;
+    await request(`/api/books/${data.book.id}/cover`);
   }
 
   async function retryStory() {
@@ -400,7 +407,7 @@
       <a class="brand compact" href="/"><span class="brand-mark">S</span><span>Storyloom</span></a>
       <a class="back-link" href="/">← Library</a>
       <div class="book-identity">
-        <div class="side-cover"><span>{data.book.title.slice(0, 1)}</span></div>
+        <div class="side-cover">{#if data.book.coverImage}<img src={data.book.coverImage.path} alt={`Cover of ${data.book.title}`} />{:else}<span>{data.book.title.slice(0, 1)}</span>{/if}</div>
         <div><strong>{data.book.title}</strong><small>{data.book.sourceName}</small></div>
       </div>
       <nav class="chapter-list" aria-label="Chapters">
@@ -440,6 +447,11 @@
             {:else if visualReferencesOutdated && data.runtime.technicalUi}
               <button class="secondary-button" onclick={prepareRegistry} disabled={registryJobActive}>Refresh illustrated references</button>
             {/if}
+            {#if !data.book.coverImage}
+              <button class="secondary-button" onclick={paintCover} disabled={coverJobActive}>{coverJobActive ? 'Painting the cover…' : 'Paint the book cover'}</button>
+            {:else if data.runtime.technicalUi}
+              <button class="secondary-button" onclick={paintCover} disabled={coverJobActive}>{coverJobActive ? 'Painting the cover…' : 'Draw a new cover'}</button>
+            {/if}
             {#if rendered}<button class="secondary-button" onclick={regenerateAudio} disabled={chapterJobActive}>{audioJobActive ? 'Regenerating audio…' : 'Regenerate all audio'}</button><button class="secondary-button" onclick={regenerateChapter} disabled={chapterJobActive}>Regenerate chapter</button>{/if}
           </div>
         </details>
@@ -455,7 +467,7 @@
         {#each activeJobs as job}
           <article class="job-card">
             <div class="job-summary">
-              <div><strong>{job.kind === 'story' ? 'Writing the manuscript' : job.kind === 'registry' ? 'Getting to know the book' : job.kind === 'character-reference' ? `Character portrait · ${data.book.characters.find((character) => character.id === job.characterId)?.canonicalName ?? job.characterId}` : job.kind === 'chapter-audio' ? `Voices · ${data.book.chapters.find((item) => item.id === job.chapterId)?.title ?? 'Chapter'}` : data.book.chapters.find((item) => item.id === job.chapterId)?.title ?? 'Chapter performance'}</strong><span>{job.status === 'queued' ? `Waiting to start${job.queuePosition ? ` · number ${job.queuePosition} in line` : ''}` : 'In progress'}</span></div>
+              <div><strong>{job.kind === 'story' ? 'Writing the manuscript' : job.kind === 'registry' ? 'Getting to know the book' : job.kind === 'book-cover' ? 'Painting the cover' : job.kind === 'character-reference' ? `Character portrait · ${data.book.characters.find((character) => character.id === job.characterId)?.canonicalName ?? job.characterId}` : job.kind === 'chapter-audio' ? `Voices · ${data.book.chapters.find((item) => item.id === job.chapterId)?.title ?? 'Chapter'}` : data.book.chapters.find((item) => item.id === job.chapterId)?.title ?? 'Chapter performance'}</strong><span>{job.status === 'queued' ? `Waiting to start${job.queuePosition ? ` · number ${job.queuePosition} in line` : ''}` : 'In progress'}</span></div>
               <b>{jobPercent(job)}%</b>
             </div>
             <div class="job-progress"><i style={`width: ${jobPercent(job)}%`}></i></div>

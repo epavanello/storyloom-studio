@@ -55,10 +55,17 @@ export type ImageRequest = {
   prompt: string;
   characters: Character[];
   worldElements: WorldElement[];
-  kind: 'character-reference' | 'world-reference' | 'scene';
+  kind: 'character-reference' | 'world-reference' | 'scene' | 'cover';
   seed: number;
   styleId: string;
 };
+
+export function imageDirectory(kind: ImageRequest['kind']) {
+  if (kind === 'scene') return 'scenes';
+  if (kind === 'world-reference') return 'world';
+  if (kind === 'cover') return 'cover';
+  return 'characters';
+}
 
 export interface ImageProvider {
   id: string;

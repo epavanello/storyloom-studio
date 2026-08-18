@@ -28,6 +28,8 @@ export type BookSummary = {
   registryStatus: BookManifest['registryStatus'];
   chapterCount: number;
   characterCount: number;
+  /** Access-controlled URL of the generated cover, when the book already has one. */
+  coverImagePath: string | null;
   origin: { kind: 'imported' } | { kind: 'generated'; status: Extract<BookOrigin, { kind: 'generated' }>['status']; requestedChapterCount: number };
   trashedAt: string | null;
 };
@@ -96,6 +98,7 @@ export async function getManifest(userId: string, bookId: string): Promise<BookM
     worldElements: book.worldElements,
     voices: book.voices,
     visualStyle: book.visualStyle,
+    coverImage: book.coverImage,
     chapters: rows.map((row) => ({
       id: row.id,
       order: row.order,
@@ -118,6 +121,7 @@ async function summaries(userId: string, trashed: boolean): Promise<BookSummary[
       registryStatus: books.registryStatus,
       origin: books.origin,
       characters: books.characters,
+      coverImage: books.coverImage,
       chapterId: chapters.id
     })
     .from(books)
@@ -141,6 +145,7 @@ async function summaries(userId: string, trashed: boolean): Promise<BookSummary[
       registryStatus: row.registryStatus,
       chapterCount: row.chapterId ? 1 : 0,
       characterCount: row.characters.length,
+      coverImagePath: row.coverImage?.path ?? null,
       origin: row.origin.kind === 'generated'
         ? { kind: 'generated', status: row.origin.status, requestedChapterCount: row.origin.requestedChapterCount }
         : { kind: 'imported' }
@@ -205,6 +210,7 @@ export async function saveBookRegistry(bookId: string, patch: {
   worldElements?: WorldElement[];
   voices?: VoiceProfile[];
   visualStyle?: BookManifest['visualStyle'];
+  coverImage?: BookManifest['coverImage'];
   registryStatus?: BookManifest['registryStatus'];
 }) {
   const db = getDb();

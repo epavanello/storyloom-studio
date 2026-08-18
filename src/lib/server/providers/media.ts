@@ -1,7 +1,7 @@
 import { readArtifact, saveArtifact, safePart } from '../store';
 import type { ArtifactRef } from '../../core/schemas';
 import { chatterboxVoiceOptions, geminiVoiceOptions, qwenVoiceOptions } from '../voices';
-import type { ImageProvider, ImageRequest, SpeechProvider, SpeechRequest, VoiceOption } from './contracts';
+import { imageDirectory, type ImageProvider, type ImageRequest, type SpeechProvider, type SpeechRequest, type VoiceOption } from './contracts';
 
 function authHeaders(apiKey: string): Record<string, string> {
   return apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
@@ -178,7 +178,7 @@ export class OpenAiCompatibleImageProvider implements ImageProvider {
   async generate(request: ImageRequest): Promise<ArtifactRef> {
     const references = await loadReferences(request, 4);
     const root = this.baseUrl.replace(/\/$/, '');
-    const size = request.kind === 'scene' ? '1024x576' : '1024x1024';
+    const size = request.kind === 'scene' ? '1024x576' : request.kind === 'cover' ? '1024x1536' : '1024x1024';
     const response = references.length
       ? await (() => {
           const form = new FormData();
@@ -204,8 +204,7 @@ export class OpenAiCompatibleImageProvider implements ImageProvider {
     const bytes = result.b64_json
       ? Uint8Array.from(Buffer.from(result.b64_json, 'base64'))
       : new Uint8Array(await (await fetchChecked(result.url!, {})).arrayBuffer());
-    const directory = request.kind === 'scene' ? 'scenes' : request.kind === 'world-reference' ? 'world' : 'characters';
-    return saveArtifact(request.bookId, `${directory}/${safePart(request.artifactName)}.png`, bytes, { mimeType: 'image/png', provider: this.id, model: this.model, styleId: request.styleId });
+    return saveArtifact(request.bookId, `${imageDirectory(request.kind)}/${safePart(request.artifactName)}.png`, bytes, { mimeType: 'image/png', provider: this.id, model: this.model, styleId: request.styleId });
   }
 }
 
@@ -230,7 +229,7 @@ export class OpenRouterImageProvider implements ImageProvider {
           body: JSON.stringify({
             model: this.model,
             prompt: request.prompt,
-            aspect_ratio: request.kind === 'scene' ? '16:9' : '1:1',
+            aspect_ratio: request.kind === 'scene' ? '16:9' : request.kind === 'cover' ? '2:3' : '1:1',
             resolution: '1K',
             ...(inputReferences.length ? { input_references: inputReferences } : {})
           })
@@ -243,8 +242,7 @@ export class OpenRouterImageProvider implements ImageProvider {
           : new Uint8Array(await (await fetchChecked(result.url!, { signal: AbortSignal.timeout(30_000) })).arrayBuffer());
         const mimeType = result.media_type ?? 'image/png';
         const extension = mimeType === 'image/svg+xml' ? 'svg' : mimeType === 'image/jpeg' ? 'jpg' : mimeType === 'image/webp' ? 'webp' : 'png';
-        const directory = request.kind === 'scene' ? 'scenes' : request.kind === 'world-reference' ? 'world' : 'characters';
-        return saveArtifact(request.bookId, `${directory}/${safePart(request.artifactName)}.${extension}`, bytes, { mimeType, provider: this.id, model: this.model, styleId: request.styleId });
+        return saveArtifact(request.bookId, `${imageDirectory(request.kind)}/${safePart(request.artifactName)}.${extension}`, bytes, { mimeType, provider: this.id, model: this.model, styleId: request.styleId });
       } catch (error) {
         lastError = error;
         const message = error instanceof Error ? error.message : String(error);

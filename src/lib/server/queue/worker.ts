@@ -1,7 +1,7 @@
 import { getConfig } from '../config';
 import { buildRunContext } from '../context';
 import { finalize, JobCancelledError, markJobActive, recoverInterruptedJobs, reportJobProgress } from '../jobs';
-import { prepareChapter, prepareRegistry, regenerateChapterAudio, regenerateCharacterReference } from '../orchestrator';
+import { generateBookCoverOnly, prepareChapter, prepareRegistry, regenerateChapterAudio, regenerateCharacterReference } from '../orchestrator';
 import { describeGenerationFailure } from '../providers/failures';
 import { generateStory } from '../story';
 import { getStorage } from '../storage/index';
@@ -33,6 +33,7 @@ async function execute(payload: JobPayload) {
     if (kind === 'story') await generateStory(context, report);
     else if (kind === 'registry') await prepareRegistry(context, report);
     else if (kind === 'character-reference') await regenerateCharacterReference(context, characterId!, report);
+    else if (kind === 'book-cover') await generateBookCoverOnly(context, report);
     else if (kind === 'chapter-audio') await regenerateChapterAudio(context, chapterId!, jobId, report);
     else await prepareChapter(context, chapterId!, report, { force, generationId: jobId });
     await finalize(jobId, 'completed');

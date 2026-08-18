@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { parseBuffer } from 'music-metadata';
 import { z } from 'zod';
-import { BookManifestSchema, ChapterPlanSchema, CharacterSchema, WorldElementSchema, type BookManifest, type ChapterPlan, type Character, type GenerationAudioPreview, type RenderedChapter, type WorldElement } from '../core/schemas';
+import { BookManifestSchema, ChapterPlanSchema, CharacterSchema, CoverConceptSchema, WorldElementSchema, type BookManifest, type ChapterPlan, type Character, type GenerationAudioPreview, type RenderedChapter, type WorldElement } from '../core/schemas';
 import { locateChapterPlanText, splitAttributedNarration, validateChapterPlan, validateVisualBeatCoverage, visualBeatRange } from '../core/plan';
 import { authoringContextBlock, authoringContextFor, withAuthoringContext } from '../core/authoring';
 import { parseBook } from './ingest';
@@ -287,6 +287,57 @@ async function generateOrResumeChapterAudio(options: {
   return plan.utterances.map((utterance) => completed.get(utterance.id)!);
 }
 
+/**
+ * The one property a cover must have here: it is an image, not a book jacket. Typography is
+ * added by the reader's interface, which already knows the title, so any lettering the model
+ * invents would be a second, permanently wrong title baked into the artwork.
+ */
+const COVER_WITHOUT_TEXT = 'Draw no lettering of any kind anywhere in the frame: no title, author name, series name, tagline, publisher mark, sticker, badge, caption, page number, watermark, signature, or invented writing, including on signs, books, spines, banners, or objects inside the scene. No border, frame, mockup of a printed book, or empty band reserved for a title.';
+
+/**
+ * Draws the wordless key image for a whole book. The concept is decided first, from the
+ * book itself, so the cover states one memorable idea rather than averaging the manuscript;
+ * the identities it may show are conditioned on the reference sheets the registry just drew.
+ */
+async function generateBookCover(options: {
+  context: RunContext;
+  manifest: BookManifest;
+  service: ReturnType<typeof providers>;
+  authoringContext: ReturnType<typeof authoringContextFor>;
+  onProgress: ProgressReporter;
+  /** Set when a cover is drawn again on request, so the previous one keeps its bytes. */
+  variant?: string;
+}) {
+  const { context, manifest, service, authoringContext, onProgress, variant } = options;
+  const { bookId } = context;
+  const styleId = manifest.visualStyle.id;
+  const hasReference = (images: { styleId?: string }[]) => images.some((image) => image.styleId === styleId);
+  const leadCharacters = manifest.characters.filter((character) => hasReference(character.referenceImages)).slice(0, 2);
+  const anchorElements = manifest.worldElements
+    .filter((element) => element.referencePriority === 'essential' && hasReference(element.referenceImages))
+    .slice(0, 1);
+
+  const concept = await withLocalRuntime('text', () => service.text.generate({
+    schema: CoverConceptSchema,
+    schemaName: 'cover-concept',
+    system: withAuthoringContext('Design the cover image of a book as a single memorable picture. Choose one clear subject that a reader could recall and recognise later — a character in a defining moment, a decisive object, or a place that carries the story — and reject anything generic, busy, or merely decorative. Everything you describe is drawn: never plan for a title, byline, or any lettering, and never plan a layout that leaves space for one. Base the choice only on what the book actually contains.', authoringContext),
+    prompt: `BOOK_TITLE: ${manifest.title}\n${authoringContextBlock(authoringContext)}CHARACTERS:\n${JSON.stringify(manifest.characters.map((character) => ({ name: character.canonicalName, appearance: character.physicalDescription, role: character.narrativeRole })))}\n\nWORLD_ELEMENTS:\n${JSON.stringify(manifest.worldElements.map((element) => ({ name: element.canonicalName, kind: element.kind, appearance: element.visualDescription, role: element.continuityRole })))}\n\nOPENING_EXCERPT:\n${manifest.chapters[0]?.text.slice(0, 3_000) ?? ''}\n\nCLOSING_EXCERPT:\n${manifest.chapters.at(-1)?.text.slice(-2_000) ?? ''}`,
+    onStatus: (status) => onProgress({ stepId: 'registry-cover', status: 'running', detail: status.detail, progress: status.progress })
+  }));
+
+  await onProgress({ stepId: 'registry-cover', status: 'running', detail: 'Painting the cover' });
+  return withLocalRuntime(leadCharacters.length || anchorElements.length ? 'image-edit' : 'image-generate', () => service.image.generate({
+    bookId,
+    artifactName: variant ? `cover-${styleId}-${variant}` : `cover-${styleId}`,
+    kind: 'cover',
+    characters: leadCharacters,
+    worldElements: anchorElements,
+    seed: seed(`${bookId}:cover:${styleId}:${variant ?? 'initial'}`),
+    styleId,
+    prompt: `${manifest.visualStyle.prompt} Create exactly one book cover image in a tall portrait format. Subject: ${concept.concept}. Composition: ${concept.composition}. Palette: ${concept.palette}. Preserve identity and canonical traits from the supplied references, rendered in this exact illustrated medium. Make it read instantly at thumbnail size: one dominant subject, strong silhouette, deliberate negative space, and no crowded detail. ${COVER_WITHOUT_TEXT} No photography, live-action frame, 3D render, split screen, collage, or panels.`
+  }));
+}
+
 export async function ingestBook(userId: string, fileName: string, bytes: Uint8Array) {
   const parsed = await parseBook(fileName, bytes);
   if (!parsed.chapters.length) throw new Error('No readable chapters were found');
@@ -372,12 +423,29 @@ export async function prepareRegistry(context: RunContext, onProgress: ProgressR
     await onProgress({ stepId: 'registry-references', status: 'completed', completed: missingReferences, total: missingReferences });
     manifest.characters = registry.characters;
     manifest.worldElements = registry.worldElements;
+
+    // The cover is drawn last: it is the only image that describes the whole book, so it
+    // can only be composed once the cast and the recurring places are settled.
+    const coverOutdated = manifest.coverImage?.styleId !== manifest.visualStyle.id;
+    await onProgress({
+      stepId: 'registry-cover',
+      status: coverOutdated ? 'running' : 'completed',
+      completed: coverOutdated ? 0 : 1,
+      total: 1,
+      detail: coverOutdated ? 'Deciding what the cover should show' : 'The cover is already painted'
+    });
+    if (coverOutdated) {
+      manifest.coverImage = await generateBookCover({ context, manifest, service, authoringContext, onProgress });
+    }
+    await onProgress({ stepId: 'registry-cover', status: 'completed', completed: 1, total: 1 });
+
     manifest.voices = assignVoiceProfiles(manifest, service.speech);
     manifest.registryStatus = 'ready';
     await saveBookRegistry(bookId, {
       characters: manifest.characters,
       worldElements: manifest.worldElements,
       voices: manifest.voices,
+      coverImage: manifest.coverImage,
       registryStatus: 'ready'
     });
     return manifest;
@@ -386,6 +454,30 @@ export async function prepareRegistry(context: RunContext, onProgress: ProgressR
     await saveBookRegistry(bookId, { registryStatus: manifest.registryStatus });
     throw error;
   }
+}
+
+/**
+ * Draws only the cover, for a book whose registry ran before covers existed or whose cover
+ * the owner wants redrawn. It deliberately does not require a registry: without reference
+ * sheets the cover is composed from the manuscript alone rather than refusing to exist.
+ */
+export async function generateBookCoverOnly(context: RunContext, onProgress: ProgressReporter = noProgress) {
+  const blocker = describeMissingCredentials(context);
+  if (blocker) throw new Error(blocker);
+  const manifest = await getManifest(context.userId, context.bookId);
+  if (!manifest.chapters.length) throw new Error('This book has no manuscript to draw a cover from');
+  await onProgress({ stepId: 'registry-cover', status: 'running', completed: 0, total: 1, detail: 'Deciding what the cover should show' });
+  const coverImage = await generateBookCover({
+    context,
+    manifest,
+    service: providers(context),
+    authoringContext: authoringContextFor(manifest),
+    onProgress,
+    variant: manifest.coverImage ? String(Date.now()) : undefined
+  });
+  await saveBookRegistry(context.bookId, { coverImage });
+  await onProgress({ stepId: 'registry-cover', status: 'completed', completed: 1, total: 1, detail: 'The cover is ready' });
+  return { ...manifest, coverImage };
 }
 
 export async function regenerateCharacterReference(context: RunContext, characterId: string, onProgress: ProgressReporter = noProgress) {
@@ -427,18 +519,20 @@ export async function prepareChapter(
   if (cached && !options.force) return cached;
   let manifest = await getManifest(context.userId, bookId);
   const referencesOutdated = manifest.characters.some((character) => !character.referenceImages.some((reference) => reference.styleId === manifest.visualStyle.id))
-    || manifest.worldElements.some((element) => !element.referenceImages.some((reference) => reference.styleId === manifest.visualStyle.id));
+    || manifest.worldElements.some((element) => !element.referenceImages.some((reference) => reference.styleId === manifest.visualStyle.id))
+    || manifest.coverImage?.styleId !== manifest.visualStyle.id;
   if (manifest.registryStatus !== 'ready' || referencesOutdated) {
     await onProgress({ stepId: 'registry', status: 'running', completed: 0, total: 1, detail: 'Getting to know the characters first' });
     const chapterCount = manifest.chapters.length;
     manifest = await prepareRegistry(context, async (update) => {
       const isReferences = update.stepId === 'registry-references';
+      const isCover = update.stepId === 'registry-cover';
       await onProgress({
         stepId: 'registry',
-        status: update.status === 'failed' ? 'failed' : update.status === 'completed' && isReferences ? 'completed' : 'running',
-        completed: (isReferences ? chapterCount : 0) + (update.completed ?? 0),
-        total: chapterCount + (isReferences ? update.total ?? 0 : 1),
-        detail: update.detail ?? (isReferences ? 'Drawing the character sheets' : 'Reading the book for its characters')
+        status: update.status === 'failed' ? 'failed' : update.status === 'completed' && isCover ? 'completed' : 'running',
+        completed: (isReferences || isCover ? chapterCount : 0) + (update.completed ?? 0),
+        total: chapterCount + (isReferences || isCover ? update.total ?? 0 : 1),
+        detail: update.detail ?? (isCover ? 'Painting the cover' : isReferences ? 'Drawing the character sheets' : 'Reading the book for its characters')
       });
     });
   }

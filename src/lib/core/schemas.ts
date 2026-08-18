@@ -128,7 +128,20 @@ export const BookManifestSchema = z.object({
   worldElements: z.array(WorldElementSchema).default([]),
   voices: z.array(VoiceProfileSchema).default([]),
   visualStyle: VisualStyleSchema.default(DEFAULT_VISUAL_STYLE),
+  /** One wordless key image for the whole book, drawn once the registry is known. */
+  coverImage: ArtifactRefSchema.nullable().default(null),
   registryStatus: z.enum(['pending', 'processing', 'ready', 'failed']).default('pending')
+});
+
+/**
+ * The art direction of a cover, decided from the book before anything is drawn. It carries
+ * no title, byline, or lettering: the cover is meant to be recognised as an image.
+ */
+export const CoverConceptSchema = z.object({
+  /** The single memorable subject the cover is built around. */
+  concept: z.string().trim().min(1),
+  composition: z.string().trim().min(1),
+  palette: z.string().trim().min(1)
 });
 
 export const PerformanceDirectionSchema = z.object({
@@ -234,7 +247,7 @@ export const GenerationJobStepSchema = z.object({
   progress: z.number().min(0).max(1).optional()
 });
 
-export const JobKindSchema = z.enum(['story', 'registry', 'chapter', 'chapter-audio', 'character-reference']);
+export const JobKindSchema = z.enum(['story', 'registry', 'chapter', 'chapter-audio', 'character-reference', 'book-cover']);
 export const JobStatusSchema = z.enum(['queued', 'active', 'completed', 'failed', 'cancelled']);
 
 export const ChapterGenerationCheckpointSchema = z.object({
@@ -309,6 +322,7 @@ export type StoryCreationRequest = z.infer<typeof StoryCreationRequestSchema>;
 export type StoryOutline = z.infer<typeof StoryOutlineSchema>;
 export type GeneratedStoryChapter = z.infer<typeof GeneratedStoryChapterSchema>;
 export type Character = z.infer<typeof CharacterSchema>;
+export type CoverConcept = z.infer<typeof CoverConceptSchema>;
 export type ChapterPlan = z.infer<typeof ChapterPlanSchema>;
 export type RenderedChapter = z.infer<typeof RenderedChapterSchema>;
 export type GenerationAudioPreview = z.infer<typeof GenerationAudioPreviewSchema>;

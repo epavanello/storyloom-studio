@@ -121,7 +121,10 @@
         {#each data.books as book, index}
           <div class="book-slot">
             <a class="book-card" href={`/books/${book.id}`}>
-              <div class="mini-cover cover-{index % 4}"><span>{book.title.slice(0, 1)}</span><small>{book.chapterCount} CHAPTERS</small></div>
+              <div class="mini-cover cover-{index % 4}" class:painted={book.coverImagePath}>
+                {#if book.coverImagePath}<img src={book.coverImagePath} alt="" loading="lazy" />{:else}<span>{book.title.slice(0, 1)}</span>{/if}
+                <small>{book.chapterCount} CHAPTERS</small>
+              </div>
               <div><strong>{book.title}</strong><span>{book.origin.kind === 'generated' && book.origin.status !== 'ready' ? `${book.chapterCount}/${book.origin.requestedChapterCount} chapters written` : book.registryStatus === 'ready' ? `${book.characterCount} characters ready` : 'Ready to read or prepare'}</span></div>
               <b>→</b>
             </a>
