@@ -125,13 +125,15 @@
   $effect(() => {
     const index = activeIndex;
     rendered?.chapterId;
+    if (viewMode !== 'performance') return;
     requestAnimationFrame(() => {
       const active = scriptScroll?.querySelector<HTMLElement>(`[data-utterance-index="${index}"]`);
       if (!active || !scriptScroll) return;
       const viewport = scriptScroll.getBoundingClientRect();
       const item = active.getBoundingClientRect();
+      const transportTop = document.querySelector<HTMLElement>('.transport')?.getBoundingClientRect().top ?? viewport.bottom;
       const safeTop = viewport.top + 16;
-      const safeBottom = viewport.bottom - 56;
+      const safeBottom = Math.min(viewport.bottom - 16, transportTop - 12);
       if (item.bottom > safeBottom) scriptScroll.scrollBy({ top: item.bottom - safeBottom, behavior: playing ? 'smooth' : 'auto' });
       else if (item.top < safeTop) scriptScroll.scrollBy({ top: item.top - safeTop, behavior: playing ? 'smooth' : 'auto' });
     });
@@ -384,36 +386,51 @@
 
 <div class="studio-shell">
   <aside class="studio-sidebar">
-    <a class="brand compact" href="/"><span class="brand-mark">S</span><span>Storyloom</span></a>
-    <a class="back-link" href="/">← Library</a>
-    <div class="book-identity">
-      <div class="side-cover"><span>{data.book.title.slice(0, 1)}</span></div>
-      <div><strong>{data.book.title}</strong><small>{data.book.sourceName}</small></div>
+    <div class="mobile-topbar">
+      <a class="mobile-library-link" href="/" aria-label="Back to library">←</a>
+      <a class="brand compact" href="/"><span class="brand-mark">S</span><span>Storyloom</span></a>
+      <details class="mobile-menu">
+        <summary aria-label="Open book navigation">Menu</summary>
+        <div class="mobile-menu-panel">
+          <strong>{data.book.title}</strong>
+          <nav aria-label="Chapters">
+            {#each data.book.chapters as item}
+              <a class:active={item.id === data.chapterId} href={`/books/${data.book.id}?chapter=${item.id}`}>
+                <span>{String(item.order + 1).padStart(2, '0')}</span>{item.title}
+              </a>
+            {/each}
+          </nav>
+          <div class="mobile-menu-links"><a href="/jobs">Job queue</a><a href="/settings">Settings</a></div>
+          {#if data.runtime.technicalUi}<button class="danger-button" onclick={deleteBook} disabled={activeJobs.length > 0}>Move book to trash</button>{/if}
+        </div>
+      </details>
     </div>
-    <nav class="chapter-list" aria-label="Chapters">
-      <p>Chapters</p>
-      {#each data.book.chapters as item}
-        <a class:active={item.id === data.chapterId} href={`/books/${data.book.id}?chapter=${item.id}`}>
-          <span>{String(item.order + 1).padStart(2, '0')}</span><div><strong>{item.title}</strong><small>{Math.max(1, Math.round(item.characterCount / 900))} min read</small></div>
-        </a>
-      {/each}
-    </nav>
-    <div class="runtime-card"><span><i></i> Runtime · {data.runtime.mode}</span><strong>{data.runtime.mode === 'mock' ? 'Demo provider' : data.runtime.text}</strong><small>{data.runtime.mode === 'mock' ? 'Configure local or cloud models in .env' : `${data.runtime.speech} · ${data.runtime.image} · ${data.runtime.alignment}`}</small></div>
-    <nav class="side-links"><a href="/jobs">Job queue</a><a href="/settings">Settings</a></nav>
-    {#if data.runtime.technicalUi}<button class="danger-button" onclick={deleteBook} disabled={activeJobs.length > 0}>Move book to trash</button>{/if}
+    <div class="desktop-sidebar-content">
+      <a class="brand compact" href="/"><span class="brand-mark">S</span><span>Storyloom</span></a>
+      <a class="back-link" href="/">← Library</a>
+      <div class="book-identity">
+        <div class="side-cover"><span>{data.book.title.slice(0, 1)}</span></div>
+        <div><strong>{data.book.title}</strong><small>{data.book.sourceName}</small></div>
+      </div>
+      <nav class="chapter-list" aria-label="Chapters">
+        <p>Chapters</p>
+        {#each data.book.chapters as item}
+          <a class:active={item.id === data.chapterId} href={`/books/${data.book.id}?chapter=${item.id}`}>
+            <span>{String(item.order + 1).padStart(2, '0')}</span><div><strong>{item.title}</strong><small>{Math.max(1, Math.round(item.characterCount / 900))} min read</small></div>
+          </a>
+        {/each}
+      </nav>
+      <div class="runtime-card"><span><i></i> Runtime · {data.runtime.mode}</span><strong>{data.runtime.mode === 'mock' ? 'Demo provider' : data.runtime.text}</strong><small>{data.runtime.mode === 'mock' ? 'Configure local or cloud models in .env' : `${data.runtime.speech} · ${data.runtime.image} · ${data.runtime.alignment}`}</small></div>
+      <nav class="side-links"><a href="/jobs">Job queue</a><a href="/settings">Settings</a></nav>
+      {#if data.runtime.technicalUi}<button class="danger-button" onclick={deleteBook} disabled={activeJobs.length > 0}>Move book to trash</button>{/if}
+    </div>
   </aside>
 
   <main class="studio-main">
     <header class="studio-header">
       <div><p class="eyebrow">{chapter ? `Chapter ${chapter.order + 1}` : 'Source manuscript'}</p><h1>{chapter?.title ?? data.book.title}</h1></div>
-      <div class="header-actions">
-        {#if (rendered || previewPlan) && chapter}
-          <div class="reading-mode-switch" aria-label="Chapter view">
-            <button class:active={viewMode === 'read'} onclick={() => viewMode = 'read'}>Read</button>
-            <button class:active={viewMode === 'performance'} onclick={() => viewMode = 'performance'}>Performance</button>
-          </div>
-        {/if}
-        {#if chapter}<span class:ready={data.book.registryStatus === 'ready' && !visualReferencesOutdated} class="registry-badge">{data.book.registryStatus === 'ready' ? visualReferencesOutdated ? 'Visual references need refresh' : '✓ Continuity registries ready' : 'Continuity registries pending'}</span>{/if}
+      <div class="header-actions desktop-chapter-actions">
+        {#if chapter}<span class:ready={data.book.registryStatus === 'ready' && !visualReferencesOutdated} class="registry-badge">{data.book.registryStatus === 'ready' ? visualReferencesOutdated ? 'Visual references need refresh' : '✓ Cast & places ready' : 'Preparing cast & places'}</span>{/if}
         {#if data.runtime.technicalUi && chapter && storySourceReady}
           {#if data.book.registryStatus !== 'ready'}
             <button class="secondary-button" onclick={prepareRegistry} disabled={registryJobActive}>Build registry</button>
@@ -424,6 +441,29 @@
         {/if}
       </div>
     </header>
+
+    {#if (rendered || previewPlan) && chapter}
+      <div class="chapter-view-bar">
+        <div class="reading-mode-switch" aria-label="Chapter view">
+          <button class:active={viewMode === 'read'} onclick={() => viewMode = 'read'}>Read</button>
+          <button class:active={viewMode === 'performance'} onclick={() => viewMode = 'performance'}>Watch & listen</button>
+        </div>
+        {#if data.runtime.technicalUi}
+          <details class="mobile-chapter-tools">
+            <summary>Chapter options</summary>
+            <div>
+              <p>{data.book.registryStatus === 'ready' && !visualReferencesOutdated ? 'The cast and recurring places are ready, helping scenes stay visually consistent.' : visualReferencesOutdated ? 'Some illustrated references need to be refreshed before the next generation.' : 'Storyloom is still preparing the cast and recurring places.'}</p>
+              {#if data.book.registryStatus !== 'ready'}
+                <button class="secondary-button" onclick={prepareRegistry} disabled={registryJobActive}>Build cast & places</button>
+              {:else if visualReferencesOutdated}
+                <button class="secondary-button" onclick={prepareRegistry} disabled={registryJobActive}>Refresh illustrated references</button>
+              {/if}
+              {#if rendered}<button class="secondary-button" onclick={regenerateAudio} disabled={chapterJobActive}>{audioJobActive ? 'Regenerating audio…' : 'Regenerate all audio'}</button><button class="secondary-button" onclick={regenerateChapter} disabled={chapterJobActive}>Regenerate chapter</button>{/if}
+            </div>
+          </details>
+        {/if}
+      </div>
+    {/if}
 
     {#if activeJobs.length}
       <section class="jobs-panel" aria-live="polite">
@@ -488,7 +528,7 @@
         </div>
 
         <div class="reading-panel">
-          <div class="reading-heading"><span>Performance script</span><small>{rendered.plan.utterances.length} voiced passages</small></div>
+          <div class="reading-heading"><span><span class="desktop-label">Performance script</span><span class="mobile-label">Story</span></span><small>{rendered.plan.utterances.length} voiced passages</small></div>
           <div class="script-scroll" bind:this={scriptScroll}>
             {#each rendered.utterances as item, index}
               <button data-utterance-index={index} class:active={index === activeIndex} class="utterance" onclick={() => void selectUtterance(index)}>

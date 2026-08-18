@@ -73,3 +73,72 @@
 /* A failed job stays actionable: resuming it reuses the plan and passages already generated. */
 .error-panel button{align-self:flex-start;margin-top:8px}
 .jobs-table td button+button{margin-left:10px}
+
+/* The chapter page leads with the story; operational controls stay available without competing with it. */
+.mobile-topbar,.mobile-chapter-tools,.mobile-label{display:none}.desktop-sidebar-content{display:flex;flex:1;min-height:0;flex-direction:column}.chapter-view-bar{display:flex;justify-content:flex-end;align-items:center;gap:10px;margin:-8px 0 18px}.chapter-view-bar .reading-mode-switch{min-width:220px}.chapter-view-bar .reading-mode-switch button{flex:1}.mobile-chapter-tools{position:relative}.mobile-chapter-tools summary,.mobile-menu summary{list-style:none;cursor:pointer}.mobile-chapter-tools summary::-webkit-details-marker,.mobile-menu summary::-webkit-details-marker{display:none}
+
+@media(max-width:640px){
+  body{background:#f7f3ec}
+  .studio-sidebar{position:sticky;top:0;z-index:20;height:56px;padding:0 14px;border-right:0;border-bottom:1px solid var(--line);background:#f4efe7;overflow:visible}
+  .desktop-sidebar-content{display:none}
+  .mobile-topbar{height:55px;display:grid;grid-template-columns:40px 1fr 58px;align-items:center;gap:6px}
+  .mobile-topbar .brand.compact{justify-self:center;padding:0;border:0;font-size:15px}
+  .mobile-topbar .brand-mark{width:27px;height:27px;font-size:18px}
+  .mobile-library-link{display:grid;place-items:center;width:40px;height:40px;text-decoration:none;font-size:20px;color:#6f665c}
+  .mobile-menu{position:relative;justify-self:end}
+  .mobile-menu summary{display:grid;place-items:center;min-width:52px;height:40px;font-size:11px;color:#665e54}
+  .mobile-menu[open] summary{background:#e8e0d5}
+  .mobile-menu-panel{position:absolute;top:46px;right:0;width:min(330px,calc(100vw - 28px));padding:18px;background:#faf7f1;border:1px solid var(--line);box-shadow:0 18px 48px #2f281f2b}
+  .mobile-menu-panel>strong{display:block;margin:0 0 12px;font-family:'Instrument Serif';font-size:22px;font-weight:400}
+  .mobile-menu-panel nav{display:grid;border-block:1px solid var(--line);padding:7px 0}
+  .mobile-menu-panel nav a{display:flex;gap:10px;padding:10px 8px;text-decoration:none;font-size:12px}
+  .mobile-menu-panel nav a span{color:var(--muted);font-family:'Instrument Serif'}
+  .mobile-menu-panel nav a.active{color:var(--accent);background:#f2ebe1}
+  .mobile-menu-links{display:flex;gap:18px;padding:14px 8px}
+  .mobile-menu-links a{font-size:11px;color:var(--muted);text-decoration:none}
+  .mobile-menu-panel .danger-button{margin:4px 8px 0}
+
+  .studio-main{padding:18px 16px 56px}
+  .studio-header{margin-bottom:14px;display:block}
+  .studio-header .eyebrow{margin-bottom:8px;font-size:9px}
+  .studio-header h1{font-size:38px;line-height:1.02}
+  .desktop-chapter-actions{display:none}
+  .chapter-view-bar{justify-content:space-between;margin:0 0 12px;gap:8px}
+  .chapter-view-bar .reading-mode-switch{min-width:0;flex:1;padding:3px;border-radius:8px}
+  .chapter-view-bar .reading-mode-switch button{min-height:36px;border-radius:5px;font-size:11px}
+  .mobile-chapter-tools{display:block;flex:0 0 auto}
+  .mobile-chapter-tools>summary{display:grid;place-items:center;height:44px;padding:0 11px;border:1px solid var(--line);border-radius:8px;background:#f8f4ed;color:#6f665c;font-size:10px}
+  .mobile-chapter-tools[open]>summary{background:#e9e1d6;color:var(--ink)}
+  .mobile-chapter-tools>div{position:absolute;z-index:15;top:50px;right:0;width:min(330px,calc(100vw - 32px));padding:16px;border:1px solid var(--line);background:#faf7f1;box-shadow:0 18px 48px #2f281f2b}
+  .mobile-chapter-tools p{margin:0 0 12px;color:var(--muted);font-size:11px;line-height:1.55}
+  .mobile-chapter-tools .secondary-button{width:100%;justify-content:center;margin-top:8px;min-height:42px}
+
+  .jobs-panel,.error-panel{margin-bottom:12px}
+  .experience-grid{margin-inline:-16px;border-inline:0;background:#fbf9f4}
+  .visual-stage{height:auto;max-height:none;aspect-ratio:4/3}
+  .visual-overlay{left:18px;bottom:19px}
+  .image-dots{right:18px;bottom:20px}
+  .reading-panel{min-height:360px;max-height:52svh;border-top:1px solid var(--line);background:#fbf9f4}
+  .reading-heading{min-height:42px;padding:11px 16px;margin:0}
+  .reading-heading>span{font-family:'Instrument Serif';font-size:18px;font-weight:400}
+  .reading-heading small,.desktop-label{display:none}
+  .mobile-label{display:inline}
+  .script-scroll{padding:6px 8px 18px;scroll-padding-block:12px}
+  .utterance{padding:14px 12px;gap:6px;border-left-width:3px}
+  .utterance.active{background:#f0e7db}
+  .spoken-text{font-size:20px;line-height:1.42}
+  .speaker{font-size:8px}
+  .direction{display:none}
+  .transport{position:sticky;bottom:0;z-index:8;margin-inline:-16px;padding:9px 14px 12px;border-inline:0;box-shadow:0 -8px 24px #3d352a14}
+  .round-button{width:38px;height:38px}
+  .play-button{width:46px;height:46px}
+  .timeline{order:2;flex-basis:100%;min-width:100%}
+  .source-reader{margin-inline:-16px;border-inline:0}
+  .source-reader-heading{display:none}
+  .source-prose{padding:30px 22px 46px}
+  .source-prose h2{display:none}
+  .character-section{margin-top:38px}
+  .section-title{align-items:flex-start;gap:12px}
+  .section-title h2{font-size:31px}
+  .section-title>span{max-width:120px;text-align:right;line-height:1.4}
+}
