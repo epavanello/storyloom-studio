@@ -75,7 +75,7 @@
 .jobs-table td button+button{margin-left:10px}
 
 /* The chapter page leads with the story; operational controls stay available without competing with it. */
-.mobile-topbar,.mobile-chapter-tools,.mobile-label{display:none}.desktop-sidebar-content{display:flex;flex:1;min-height:0;flex-direction:column}.chapter-view-bar{display:flex;justify-content:flex-end;align-items:center;gap:10px;margin:-8px 0 18px}.chapter-view-bar .reading-mode-switch{min-width:220px}.chapter-view-bar .reading-mode-switch button{flex:1}.mobile-chapter-tools{position:relative}.mobile-chapter-tools summary,.mobile-menu summary{list-style:none;cursor:pointer}.mobile-chapter-tools summary::-webkit-details-marker,.mobile-menu summary::-webkit-details-marker{display:none}
+.mobile-topbar{display:none}.desktop-sidebar-content{display:flex;flex:1;min-height:0;flex-direction:column}.chapter-view-bar{display:flex;justify-content:flex-end;align-items:center;gap:10px;margin:-8px 0 18px}.chapter-view-bar .reading-mode-switch{min-width:220px}.chapter-view-bar .reading-mode-switch button{flex:1}.chapter-tools{position:relative}.chapter-tools summary,.mobile-menu summary{list-style:none;cursor:pointer}.chapter-tools summary::-webkit-details-marker,.mobile-menu summary::-webkit-details-marker{display:none}.chapter-tools>summary{display:grid;place-items:center;min-height:38px;padding:0 13px;border:1px solid var(--line);background:transparent;color:#6f665c;font-size:10px}.chapter-tools[open]>summary{background:#e9e1d6;color:var(--ink)}.chapter-tools>div{position:absolute;z-index:15;top:44px;right:0;width:300px;padding:16px;border:1px solid var(--line);background:#faf7f1;box-shadow:0 18px 48px #2f281f2b}.chapter-tools p{margin:0 0 12px;color:var(--muted);font-size:11px;line-height:1.55}.chapter-tools .secondary-button{width:100%;justify-content:center;margin-top:8px;min-height:40px}.reading-panel>.script-scroll{flex:1}
 
 @media(max-width:640px){
   body{background:#f7f3ec}
@@ -102,16 +102,13 @@
   .studio-header{margin-bottom:14px;display:block}
   .studio-header .eyebrow{margin-bottom:8px;font-size:9px}
   .studio-header h1{font-size:38px;line-height:1.02}
-  .desktop-chapter-actions{display:none}
   .chapter-view-bar{justify-content:space-between;margin:0 0 12px;gap:8px}
   .chapter-view-bar .reading-mode-switch{min-width:0;flex:1;padding:3px;border-radius:8px}
   .chapter-view-bar .reading-mode-switch button{min-height:36px;border-radius:5px;font-size:11px}
-  .mobile-chapter-tools{display:block;flex:0 0 auto}
-  .mobile-chapter-tools>summary{display:grid;place-items:center;height:44px;padding:0 11px;border:1px solid var(--line);border-radius:8px;background:#f8f4ed;color:#6f665c;font-size:10px}
-  .mobile-chapter-tools[open]>summary{background:#e9e1d6;color:var(--ink)}
-  .mobile-chapter-tools>div{position:absolute;z-index:15;top:50px;right:0;width:min(330px,calc(100vw - 32px));padding:16px;border:1px solid var(--line);background:#faf7f1;box-shadow:0 18px 48px #2f281f2b}
-  .mobile-chapter-tools p{margin:0 0 12px;color:var(--muted);font-size:11px;line-height:1.55}
-  .mobile-chapter-tools .secondary-button{width:100%;justify-content:center;margin-top:8px;min-height:42px}
+  .chapter-tools{display:block;flex:0 0 auto}
+  .chapter-tools>summary{height:44px;padding:0 11px;border-radius:8px;background:#f8f4ed}
+  .chapter-tools>div{top:50px;width:min(330px,calc(100vw - 32px))}
+  .chapter-tools .secondary-button{min-height:42px}
 
   .jobs-panel,.error-panel{margin-bottom:12px}
   .experience-grid{margin-inline:-16px;border-inline:0;background:#fbf9f4}
@@ -119,10 +116,6 @@
   .visual-overlay{left:18px;bottom:19px}
   .image-dots{right:18px;bottom:20px}
   .reading-panel{min-height:360px;max-height:52svh;border-top:1px solid var(--line);background:#fbf9f4}
-  .reading-heading{min-height:42px;padding:11px 16px;margin:0}
-  .reading-heading>span{font-family:'Instrument Serif';font-size:18px;font-weight:400}
-  .reading-heading small,.desktop-label{display:none}
-  .mobile-label{display:inline}
   .script-scroll{padding:6px 8px 18px;scroll-padding-block:12px}
   .utterance{padding:14px 12px;gap:6px;border-left-width:3px}
   .utterance.active{background:#f0e7db}

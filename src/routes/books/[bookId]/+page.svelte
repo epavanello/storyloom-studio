@@ -371,15 +371,6 @@
     return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
   }
 
-  function audioDebugTooltip(item: RenderedChapter['utterances'][number]) {
-    return [
-      `Provider: ${item.audio.provider}`,
-      `Model: ${item.audio.model}`,
-      `Voice: ${item.audio.voiceId ?? item.voice?.voiceId ?? 'unknown'}`,
-      `Language: ${item.audio.language ?? item.voice?.language ?? 'not recorded'}`,
-      `Prompt: ${item.audio.instructions ?? 'not recorded on this legacy artifact; regenerate audio to capture it'}`
-    ].join('\n');
-  }
 </script>
 
 <svelte:head><title>{data.book.title} · Storyloom</title></svelte:head>
@@ -429,30 +420,22 @@
   <main class="studio-main">
     <header class="studio-header">
       <div><p class="eyebrow">{chapter ? `Chapter ${chapter.order + 1}` : 'Source manuscript'}</p><h1>{chapter?.title ?? data.book.title}</h1></div>
-      <div class="header-actions desktop-chapter-actions">
-        {#if chapter}<span class:ready={data.book.registryStatus === 'ready' && !visualReferencesOutdated} class="registry-badge">{data.book.registryStatus === 'ready' ? visualReferencesOutdated ? 'Visual references need refresh' : '✓ Cast & places ready' : 'Preparing cast & places'}</span>{/if}
-        {#if data.runtime.technicalUi && chapter && storySourceReady}
-          {#if data.book.registryStatus !== 'ready'}
-            <button class="secondary-button" onclick={prepareRegistry} disabled={registryJobActive}>Build registry</button>
-          {:else if visualReferencesOutdated}
-            <button class="secondary-button" onclick={prepareRegistry} disabled={registryJobActive}>Refresh illustrated references</button>
-          {/if}
-          {#if rendered}<button class="secondary-button" onclick={regenerateAudio} disabled={chapterJobActive}>{audioJobActive ? 'Regenerating audio…' : 'Regenerate all audio'}</button><button class="secondary-button" onclick={regenerateChapter} disabled={chapterJobActive}>Regenerate chapter</button>{/if}
-        {/if}
-      </div>
     </header>
 
-    {#if (rendered || previewPlan) && chapter}
+    {#if chapter && (rendered || previewPlan || data.runtime.technicalUi)}
       <div class="chapter-view-bar">
-        <div class="reading-mode-switch" aria-label="Chapter view">
-          <button class:active={viewMode === 'read'} onclick={() => viewMode = 'read'}>Read</button>
-          <button class:active={viewMode === 'performance'} onclick={() => viewMode = 'performance'}>Watch & listen</button>
-        </div>
+        {#if rendered || previewPlan}
+          <div class="reading-mode-switch" aria-label="Chapter view">
+            <button class:active={viewMode === 'read'} onclick={() => viewMode = 'read'}>Read</button>
+            <button class:active={viewMode === 'performance'} onclick={() => viewMode = 'performance'}>Watch & listen</button>
+          </div>
+        {/if}
         {#if data.runtime.technicalUi}
-          <details class="mobile-chapter-tools">
+          <details class="chapter-tools">
             <summary>Chapter options</summary>
             <div>
               <p>{data.book.registryStatus === 'ready' && !visualReferencesOutdated ? 'The cast and recurring places are ready, helping scenes stay visually consistent.' : visualReferencesOutdated ? 'Some illustrated references need to be refreshed before the next generation.' : 'Storyloom is still preparing the cast and recurring places.'}</p>
+              {#if rendered}<p>{rendered.utterances.every((item) => item.alignment === 'exact') ? 'Text timing is exact.' : 'Text highlighting uses approximate timing.'}</p>{/if}
               {#if data.book.registryStatus !== 'ready'}
                 <button class="secondary-button" onclick={prepareRegistry} disabled={registryJobActive}>Build cast & places</button>
               {:else if visualReferencesOutdated}
@@ -528,13 +511,11 @@
         </div>
 
         <div class="reading-panel">
-          <div class="reading-heading"><span><span class="desktop-label">Performance script</span><span class="mobile-label">Story</span></span><small>{rendered.plan.utterances.length} voiced passages</small></div>
           <div class="script-scroll" bind:this={scriptScroll}>
             {#each rendered.utterances as item, index}
               <button data-utterance-index={index} class:active={index === activeIndex} class="utterance" onclick={() => void selectUtterance(index)}>
                 <span class="speaker">{item.utterance.speakerCharacterId ? data.book.characters.find((character) => character.id === item.utterance.speakerCharacterId)?.canonicalName ?? item.utterance.speakerCharacterId : 'Narrator'}</span>
                 <span class="spoken-text">{item.utterance.text}</span>
-                <span class="direction">{item.utterance.direction.emotion} · {item.utterance.direction.pace}<i class:exact={item.alignment === 'exact'}>{item.alignment}</i>{#if data.runtime.technicalUi}<span class="audio-debug-tooltip" title={audioDebugTooltip(item)} aria-label="Audio generation prompt">ⓘ</span>{/if}</span>
               </button>
             {/each}
           </div>
@@ -551,7 +532,6 @@
         <span class="timecode">{formatTime(globalTime)}</span>
         <input class="timeline" type="range" min="0" max="100" step="0.05" value={progress} oninput={seek} onchange={() => persistPlaybackProgress()} aria-label="Chapter progress" />
         <span class="timecode">{formatTime(rendered.totalDurationMs)}</span>
-        <span class="voice-chip">◉ {activeUtterance?.voice?.voiceId ?? (activeUtterance?.utterance.speakerCharacterId ? 'Character voice' : 'Narrator')}</span>
       </section>
     {:else if previewPlan && previewJob}
       <section class="experience-grid incremental-experience">
