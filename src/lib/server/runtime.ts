@@ -158,12 +158,19 @@ async function deactivate(phase: LocalRuntimePhase) {
   else await stopChild(phase);
 }
 
-export async function withLocalRuntime<T>(phase: LocalRuntimePhase, task: () => Promise<T>): Promise<T> {
+/**
+ * Whether this deployment runs the phase on its own machine. Callers use it to decide how
+ * much work may be in flight at once: a local runtime holds one model and must stay
+ * serial, while a cloud provider answers independent requests concurrently.
+ */
+export function usesLocalRuntime(phase: LocalRuntimePhase) {
   const config = getConfig();
   const capability = phase === 'text' ? 'text' : phase === 'speech' ? 'tts' : phase === 'alignment' ? 'alignment' : 'image';
-  const managesLocalRuntime = config.mode === 'local'
-    || config.mode === 'hybrid' && config.policies[capability] !== 'cloud-only';
-  if (!managesLocalRuntime) return task();
+  return config.mode === 'local' || (config.mode === 'hybrid' && config.policies[capability] !== 'cloud-only');
+}
+
+export async function withLocalRuntime<T>(phase: LocalRuntimePhase, task: () => Promise<T>): Promise<T> {
+  if (!usesLocalRuntime(phase)) return task();
   let unlock!: () => void;
   const previous = state.tail;
   state.tail = new Promise<void>((resolve) => { unlock = resolve; });

@@ -22,3 +22,17 @@ export function describeGenerationFailure(error: unknown) {
   }
   return message || 'Generation failed';
 }
+
+/**
+ * Whether one passage is worth trying again, as opposed to a failure that will repeat
+ * identically. A provider that answered 200 and then produced an empty audio stream, a
+ * gateway hiccup, a rate limit, or a timeout are transient; a rejected key or an exhausted
+ * limit is not, and retrying it only makes the job slower to report the real problem.
+ */
+export function isRetryableProviderFailure(error: unknown) {
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  if (/^(401|402|403|404|400)\b/u.test(message)) return false;
+  if (/key limit exceeded|insufficient credit|invalid api key|no auth credentials/iu.test(message)) return false;
+  return /^(408|409|425|429|5\d\d)\b/u.test(message)
+    || /empty audio stream|no audio|returned no image|timed? ?out|timeout|aborted|socket hang up|ECONNRESET|EPIPE|fetch failed/iu.test(message);
+}

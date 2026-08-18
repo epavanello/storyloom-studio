@@ -78,6 +78,10 @@ export const AppConfigSchema = z.object({
   // How OpenRouter picks between the providers serving a model. Empty keeps OpenRouter's
   // default price-weighted load balancing; any sort value disables that balancing.
   openRouterProviderSort: z.enum(['throughput', 'latency', 'price', '']),
+  /** How many chapter passages may be synthesized at once against a cloud speech provider. */
+  speechConcurrency: z.number().int().min(1).max(16),
+  /** How many scene or reference images may be generated at once against a cloud provider. */
+  imageConcurrency: z.number().int().min(1).max(8),
   localTtsEngine: z.enum(['qwen', 'chatterbox-v3']),
   localTtsBaseUrl: z.string(),
   localTtsModel: z.string(),
@@ -169,6 +173,12 @@ export function getConfig(): AppConfig {
     openRouterKeyMode: env.OPENROUTER_KEY_MODE ?? 'shared',
     openRouterLlmModel: env.OPENROUTER_LLM_MODEL ?? 'deepseek/deepseek-v4-flash-0731',
     openRouterProviderSort: env.OPENROUTER_PROVIDER_SORT ?? 'throughput',
+    // A chapter is often a hundred short passages, and a cloud provider answers them
+    // independently. Local speech ignores this and stays serial: one model, one GPU.
+    speechConcurrency: integer(env.STORYLOOM_SPEECH_CONCURRENCY, 6),
+    // Images cost far more per request than speech, so the default stays modest: enough to
+    // overlap the waiting, not enough to trip a provider's rate limit.
+    imageConcurrency: integer(env.STORYLOOM_IMAGE_CONCURRENCY, 3),
     localTtsEngine: env.LOCAL_TTS_ENGINE ?? 'qwen',
     localTtsBaseUrl: env.LOCAL_TTS_BASE_URL ?? 'http://127.0.0.1:7861/v1',
     localTtsModel: env.LOCAL_TTS_MODEL ?? 'qwen3-tts',

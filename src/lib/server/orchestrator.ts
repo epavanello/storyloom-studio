@@ -8,7 +8,10 @@ import { parseBook } from './ingest';
 import { describeMissingCredentials, type RunContext } from './context';
 import { createBook, getManifest, getRenderedChapter, readArtifact, saveBookRegistry, saveRenderedChapter, safePart } from './store';
 import { providers } from './providers/router';
-import { withLocalRuntime } from './runtime';
+import { isRetryableProviderFailure } from './providers/failures';
+import { runInLanes } from './concurrency';
+import { getConfig } from './config';
+import { usesLocalRuntime, withLocalRuntime } from './runtime';
 import { assignVoiceProfiles, voiceFor } from './voices';
 import { clearChapterGenerationCheckpoint, getChapterGenerationCheckpoint, saveChapterGenerationCheckpoint } from './checkpoints';
 
@@ -154,14 +157,52 @@ async function generateOrResumeChapterAudio(options: {
 
   const completed = new Map<string, AudioUnit>();
   let completedCount = 0;
-  await onProgress({ stepId: 'speech', status: 'running', completed: 0, total: plan.utterances.length, detail: reusable.size ? 'Reusing passages already recorded' : `${action === 'Generated' ? 'Recording' : 'Recording again'} the first passage` });
+  const pending = plan.utterances.filter((utterance) => !reusable.has(utterance.id));
+  // A cloud provider answers each passage independently, and a chapter is often a hundred
+  // of them; a local engine holds one model and must stay serial.
+  const lanes = usesLocalRuntime('speech') ? 1 : Math.max(1, Math.min(getConfig().speechConcurrency, pending.length));
+  await onProgress({
+    stepId: 'speech',
+    status: 'running',
+    completed: 0,
+    total: plan.utterances.length,
+    detail: reusable.size
+      ? 'Reusing passages already recorded'
+      : lanes > 1
+        ? `${action === 'Generated' ? 'Recording' : 'Recording again'} ${lanes} passages at a time`
+        : `${action === 'Generated' ? 'Recording' : 'Recording again'} the first passage`
+  });
 
-  const processPassages = async () => {
-    for (const utterance of plan.utterances) {
-      const voice = voiceFor(utterance.speakerCharacterId, manifest);
-      let preview = reusable.get(utterance.id);
-      if (!preview) {
-        const audio = await speech.synthesize({
+  // Several passages can finish at the same moment, and the checkpoint holds the complete
+  // snapshot: writes are chained so the last one to land is never an older picture.
+  let checkpointTail: Promise<void> = Promise.resolve();
+  const persistCheckpoint = async () => {
+    if (!checkpointBase) return;
+    const previous = checkpointTail;
+    let release!: () => void;
+    checkpointTail = new Promise<void>((resolve) => { release = resolve; });
+    await previous.catch(() => {});
+    try {
+      await saveChapterGenerationCheckpoint({
+        ...checkpointBase,
+        audioPreview: plan.utterances.map((item) => reusable.get(item.id)).filter(Boolean) as GenerationAudioPreview[],
+        updatedAt: new Date().toISOString()
+      });
+    } finally {
+      release();
+    }
+  };
+
+  /**
+   * One passage, with its own retries. A gateway error or an empty stream after HTTP 200
+   * is a property of that single request; failing the whole chapter for it would discard
+   * every other passage in flight and force a resume for one lost sentence.
+   */
+  const synthesizePassage = async (utterance: ChapterPlan['utterances'][number], voice: ReturnType<typeof voiceFor>) => {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        return await speech.synthesize({
           bookId: context.bookId,
           artifactName: artifactName(utterance.id),
           text: utterance.text,
@@ -170,41 +211,78 @@ async function generateOrResumeChapterAudio(options: {
           intensity: utterance.direction.intensity,
           pace: utterance.direction.pace
         });
-        let durationMs = Math.max(800, utterance.text.split(/\s+/).length / 2.45 * 1000);
-        try {
-          const metadata = await parseBuffer(await readArtifact(audio), { mimeType: audio.mimeType });
-          if (metadata.format.duration) durationMs = metadata.format.duration * 1000;
-        } catch { /* retain the explicit approximate duration */ }
-        preview = {
-          utterance,
-          audio,
-          voice: { ...voice, voiceId: audio.voiceId ?? voice.voiceId, provider: audio.provider, model: audio.model },
-          durationMs
-        };
-        reusable.set(utterance.id, preview);
-        if (checkpointBase) {
-          await saveChapterGenerationCheckpoint({
-            ...checkpointBase,
-            audioPreview: plan.utterances.map((item) => reusable.get(item.id)).filter(Boolean) as GenerationAudioPreview[],
-            updatedAt: new Date().toISOString()
-          });
-        }
+      } catch (error) {
+        lastError = error;
+        if (!isRetryableProviderFailure(error) || attempt === 3) throw error;
+        await onProgress({
+          stepId: 'speech',
+          completed: completedCount,
+          total: plan.utterances.length,
+          detail: 'Recording again one passage that did not arrive'
+        });
+        await new Promise((resolve) => setTimeout(resolve, attempt * 2_000));
       }
-      completed.set(utterance.id, { utterance, voice, audio: preview.audio, durationMs: preview.durationMs });
-      completedCount += 1;
-      const reused = compatible && stored.audioPreview.some((item) => item.utterance.id === utterance.id);
-      await onProgress({
-        stepId: 'speech',
-        completed: completedCount,
-        total: plan.utterances.length,
-        detail: reused ? 'Reusing a passage already recorded' : action === 'Generated' ? 'Recording the voices' : 'Recording the voices again',
-        audioPreview: preview
-      });
     }
+    throw lastError instanceof Error ? lastError : new Error('The speech provider could not produce this passage');
   };
 
-  if (reusable.size === plan.utterances.length) await processPassages();
-  else await withLocalRuntime('speech', processPassages);
+  const record = async (utterance: ChapterPlan['utterances'][number], voice: ReturnType<typeof voiceFor>, preview: GenerationAudioPreview, reused: boolean) => {
+    completed.set(utterance.id, { utterance, voice, audio: preview.audio, durationMs: preview.durationMs });
+    completedCount += 1;
+    await onProgress({
+      stepId: 'speech',
+      completed: completedCount,
+      total: plan.utterances.length,
+      detail: reused ? 'Reusing a passage already recorded' : action === 'Generated' ? 'Recording the voices' : 'Recording the voices again',
+      audioPreview: preview
+    });
+  };
+
+  // Everything the checkpoint already holds is published first, so a resumed job shows its
+  // recovered passages immediately instead of after the first new synthesis.
+  for (const utterance of plan.utterances) {
+    const preview = reusable.get(utterance.id);
+    if (preview) await record(utterance, voiceFor(utterance.speakerCharacterId, manifest), preview, true);
+  }
+
+  const processPassages = async () => {
+    let next = 0;
+    let stopped = false;
+    const lane = async () => {
+      while (!stopped) {
+        const utterance = pending[next];
+        next += 1;
+        if (!utterance) return;
+        try {
+          const voice = voiceFor(utterance.speakerCharacterId, manifest);
+          const audio = await synthesizePassage(utterance, voice);
+          let durationMs = Math.max(800, utterance.text.split(/\s+/).length / 2.45 * 1000);
+          try {
+            const metadata = await parseBuffer(await readArtifact(audio), { mimeType: audio.mimeType });
+            if (metadata.format.duration) durationMs = metadata.format.duration * 1000;
+          } catch { /* retain the explicit approximate duration */ }
+          const preview: GenerationAudioPreview = {
+            utterance,
+            audio,
+            voice: { ...voice, voiceId: audio.voiceId ?? voice.voiceId, provider: audio.provider, model: audio.model },
+            durationMs
+          };
+          reusable.set(utterance.id, preview);
+          await persistCheckpoint();
+          await record(utterance, voice, preview, false);
+        } catch (error) {
+          // One passage cannot be produced: stop handing out new work so the job fails
+          // fast, with every passage completed so far already in the checkpoint.
+          stopped = true;
+          throw error;
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: lanes }, () => lane()));
+    await checkpointTail.catch(() => {});
+  };
+
+  if (pending.length) await withLocalRuntime('speech', processPassages);
   await onProgress({ stepId: 'speech', status: 'completed', completed: plan.utterances.length, total: plan.utterances.length });
   return plan.utterances.map((utterance) => completed.get(utterance.id)!);
 }
@@ -267,9 +345,12 @@ export async function prepareRegistry(context: RunContext, onProgress: ProgressR
     const missingWorldReferences = registry.worldElements.filter((element) => !element.referenceImages.some((reference) => reference.styleId === manifest.visualStyle.id));
     const missingReferences = missingCharacterReferences.length + missingWorldReferences.length;
     await onProgress({ stepId: 'registry-references', status: missingReferences ? 'running' : 'completed', completed: 0, total: missingReferences, detail: missingReferences ? 'Drawing the first reference sheet' : 'Every reference sheet is already drawn' });
+    // Reference sheets are independent images; only a local runtime has to draw them one
+    // at a time. Progress stays a count, so lanes finishing out of order remain truthful.
+    const imageLanes = usesLocalRuntime('image-generate') ? 1 : getConfig().imageConcurrency;
     if (missingReferences) await withLocalRuntime('image-generate', async () => {
       let completed = 0;
-      for (const character of missingCharacterReferences) {
+      await runInLanes(missingCharacterReferences, imageLanes, async (character) => {
         const reference = await service.image.generate({
           bookId, artifactName: `${character.id}-reference-${manifest.visualStyle.id}`, kind: 'character-reference', characters: [character], worldElements: [], seed: seed(`${bookId}:${character.id}:${manifest.visualStyle.id}`), styleId: manifest.visualStyle.id,
           prompt: `${manifest.visualStyle.prompt} Create exactly one full-body portrait of one fictional character on a plain neutral illustrated background. Subject: ${character.canonicalName}. Canonical traits supported by the book: ${character.physicalDescription}. Casting mood only: ${character.personality}. Use a natural relaxed three-quarter stance and keep the complete silhouette visible. This is a clean visual identity reference, not a designed character sheet. No photography, live-action person, other people, duplicate pose, split screen, collage, panels, inset images, captions, labels, diagrams, arrows, measurements, logos, letters, or readable text.`
@@ -277,8 +358,8 @@ export async function prepareRegistry(context: RunContext, onProgress: ProgressR
         character.referenceImages = [reference, ...character.referenceImages];
         completed += 1;
         await onProgress({ stepId: 'registry-references', completed, total: missingReferences });
-      }
-      for (const element of missingWorldReferences) {
+      });
+      await runInLanes(missingWorldReferences, imageLanes, async (element) => {
         const reference = await service.image.generate({
           bookId, artifactName: `${element.id}-reference-${manifest.visualStyle.id}`, kind: 'world-reference', characters: [], worldElements: [element], seed: seed(`${bookId}:${element.id}:${manifest.visualStyle.id}`), styleId: manifest.visualStyle.id,
           prompt: `${manifest.visualStyle.prompt} Create exactly one clean establishing reference image of the recurring ${element.kind} “${element.canonicalName}”. Canonical visual evidence: ${element.visualDescription}. Continuity role: ${element.continuityRole}. Show one coherent illustrated view with no people unless the evidence explicitly requires them. No photography, alternate versions, split screen, collage, panels, inset images, captions, labels, diagrams, arrows, logos, letters, or readable text.`
@@ -286,7 +367,7 @@ export async function prepareRegistry(context: RunContext, onProgress: ProgressR
         element.referenceImages = [reference, ...element.referenceImages];
         completed += 1;
         await onProgress({ stepId: 'registry-references', completed, total: missingReferences });
-      }
+      });
     });
     await onProgress({ stepId: 'registry-references', status: 'completed', completed: missingReferences, total: missingReferences });
     manifest.characters = registry.characters;
@@ -477,8 +558,8 @@ export async function prepareChapter(
   const renderedVisuals: RenderedChapter['visuals'] = [];
   let completedVisuals = 0;
   await onProgress({ stepId: 'visuals', status: 'running', completed: 0, total: visualJobs.length, detail: visualJobs.length ? 'Painting the first scene' : 'This chapter asked for no scenes' });
-  const generateVisuals = async (jobs: typeof visualJobs) => {
-    for (const { cue, characters, worldElements } of jobs) {
+  const generateVisuals = async (jobs: typeof visualJobs, phase: 'image-generate' | 'image-edit') => {
+    await runInLanes(jobs, usesLocalRuntime(phase) ? 1 : getConfig().imageConcurrency, async ({ cue, characters, worldElements }) => {
       const anchor = renderedUtterances.find((item) => item.utterance.id === cue.utteranceId) ?? renderedUtterances[0];
       const image = await service.image.generate({
         bookId, artifactName: `${chapter.id}-${cue.id}-${manifest.visualStyle.id}${generationSuffix}`, kind: 'scene', characters, worldElements, seed: seed(`${bookId}:${chapter.id}:${cue.id}:${manifest.visualStyle.id}:${options.generationId ?? 'initial'}`), styleId: manifest.visualStyle.id,
@@ -488,12 +569,12 @@ export async function prepareChapter(
       renderedVisuals.push(renderedVisual);
       completedVisuals += 1;
       await onProgress({ stepId: 'visuals', completed: completedVisuals, total: visualJobs.length, visualPreview: renderedVisual });
-    }
+    });
   };
   const plainVisuals = visualJobs.filter(({ characters, worldElements }) => !characters.some((character) => character.referenceImages.length) && !worldElements.some((element) => element.referenceImages.length));
   const referenceVisuals = visualJobs.filter(({ characters, worldElements }) => characters.some((character) => character.referenceImages.length) || worldElements.some((element) => element.referenceImages.length));
-  if (plainVisuals.length) await withLocalRuntime('image-generate', () => generateVisuals(plainVisuals));
-  if (referenceVisuals.length) await withLocalRuntime('image-edit', () => generateVisuals(referenceVisuals));
+  if (plainVisuals.length) await withLocalRuntime('image-generate', () => generateVisuals(plainVisuals, 'image-generate'));
+  if (referenceVisuals.length) await withLocalRuntime('image-edit', () => generateVisuals(referenceVisuals, 'image-edit'));
   await onProgress({ stepId: 'visuals', status: 'completed', completed: visualJobs.length, total: visualJobs.length });
   renderedVisuals.sort((a, b) => finalPlan.visuals.indexOf(a.cue) - finalPlan.visuals.indexOf(b.cue));
   const rendered = { schemaVersion: 1 as const, chapterId, plan: finalPlan, utterances: renderedUtterances, visuals: renderedVisuals, totalDurationMs: Math.max(1, timelineMs), createdAt: new Date().toISOString() };
