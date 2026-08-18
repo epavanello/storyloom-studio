@@ -9,7 +9,11 @@ export const GET: RequestHandler = () => Response.json({
   display: 'standalone',
   theme_color: '#22352f',
   background_color: '#f5f1ea',
-  icons: [{ src: '/favicon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any maskable' }],
+  icons: [
+    { src: '/favicon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
+    { src: '/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any maskable' },
+    { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' }
+  ],
   categories: ['books', 'entertainment', 'productivity'],
   lang: 'en'
 }, { headers: { 'content-type': 'application/manifest+json', 'cache-control': 'public, max-age=86400' } });
